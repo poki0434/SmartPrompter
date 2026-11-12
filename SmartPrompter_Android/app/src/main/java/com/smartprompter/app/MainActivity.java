@@ -20,6 +20,7 @@ import android.support.v4.media.session.PlaybackStateCompat;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.view.Choreographer;
+import android.view.Gravity;
 import android.view.GestureDetector;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
@@ -29,6 +30,7 @@ import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -36,7 +38,11 @@ import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -59,6 +65,7 @@ public class MainActivity extends AppCompatActivity {
     private static final String KEY_FONT_SIZE = "key_font_size";
     private static final String KEY_MIRROR = "key_mirror";
     private static final String KEY_FOCUS_LINE = "key_focus_line";
+    private static final String KEY_ALIGN_LEFT = "key_align_left";
 
     private static final int SPEED_STEP = 10;
 
@@ -108,19 +115,26 @@ public class MainActivity extends AppCompatActivity {
     private LinearLayout framePrompterContent;
     private ScrollView prompterScrollContainer;
     private TextView tvPrompterHud;
-    private LinearLayout layoutFloatingBar;
+    private HorizontalScrollView layoutFloatingBar;
+    private LinearLayout layoutFloatingBarInner;
+    private ImageButton btnPrompterMirror;
+    private ImageButton btnPrompterAlign;
     private ImageButton btnPrompterPlayPause;
     private TextView tvPrompterSpeedIndicator;
 
     // 数据与状态
     private final List<Draft> drafts = new ArrayList<>();
     private int currentDraftIndex = -1;
+    private boolean isNewUnsavedDraft = false;
+    private String originalDraftTitle = "";
+    private String originalDraftContent = "";
     private boolean isUpdatingEditorFields = false;
 
     private int currentSpeed = 45;
     private int currentFontSize = 48;
     private boolean isMirror = false;
     private boolean showFocusLine = true;
+    private boolean isAlignLeft = false;
     private boolean isPlaying = false;
     private boolean isPrompterActive = false;
     private boolean isLandscape = true;
@@ -139,8 +153,7 @@ public class MainActivity extends AppCompatActivity {
     private long lastMediaKeyTime = 0;
 
     private GestureDetector tapGestureDetector;
-    private float swipeAnchorY = 0f;
-    private boolean isSwipeAdjustingSpeed = false;
+    private float lastTouchY = 0f;
 
     private final Handler hudHandler = new Handler(Looper.getMainLooper());
 
@@ -183,6 +196,9 @@ public class MainActivity extends AppCompatActivity {
         prompterScrollContainer = findViewById(R.id.prompterScrollContainer);
         tvPrompterHud = findViewById(R.id.tvPrompterHud);
         layoutFloatingBar = findViewById(R.id.layoutFloatingBar);
+        layoutFloatingBarInner = findViewById(R.id.layoutFloatingBarInner);
+        btnPrompterMirror = findViewById(R.id.btnPrompterMirror);
+        btnPrompterAlign = findViewById(R.id.btnPrompterAlign);
         btnPrompterPlayPause = findViewById(R.id.btnPrompterPlayPause);
         tvPrompterSpeedIndicator = findViewById(R.id.tvPrompterSpeedIndicator);
         framePrompterContent.setLayerType(View.LAYER_TYPE_HARDWARE, null);
@@ -194,10 +210,11 @@ public class MainActivity extends AppCompatActivity {
         currentFontSize = sp.getInt(KEY_FONT_SIZE, 48);
         isMirror = sp.getBoolean(KEY_MIRROR, false);
         showFocusLine = sp.getBoolean(KEY_FOCUS_LINE, true);
+        isAlignLeft = sp.getBoolean(KEY_ALIGN_LEFT, false);
 
         seekSpeed.setProgress(currentSpeed);
         tvSpeedValue.setText(currentSpeed + " px/s");
-        tvPrompterSpeedIndicator.setText(currentSpeed + " px");
+        tvPrompterSpeedIndicator.setText(String.valueOf(currentSpeed));
 
         seekFontSize.setProgress(currentFontSize);
         tvFontSizeValue.setText(currentFontSize + " sp");
@@ -250,6 +267,7 @@ public class MainActivity extends AppCompatActivity {
                 .putInt(KEY_FONT_SIZE, currentFontSize)
                 .putBoolean(KEY_MIRROR, isMirror)
                 .putBoolean(KEY_FOCUS_LINE, showFocusLine)
+                .putBoolean(KEY_ALIGN_LEFT, isAlignLeft)
                 .apply();
     }
 
@@ -352,16 +370,32 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private String getTodayDateTitle() {
+        return new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(new Date());
+    }
+
     private void createNewDraft() {
-        String title = "文档" + (drafts.size() + 1);
-        drafts.add(0, new Draft(UUID.randomUUID().toString(), title, ""));
-        saveDrafts();
-        openDraftInEditor(0);
+        isNewUnsavedDraft = true;
+        currentDraftIndex = -1;
+        originalDraftTitle = getTodayDateTitle();
+        originalDraftContent = "";
+
+        isUpdatingEditorFields = true;
+        etDraftTitle.setText(originalDraftTitle);
+        etScript.setText("");
+        isUpdatingEditorFields = false;
+
+        updateWordCount();
+        layoutDraftList.setVisibility(View.GONE);
+        layoutEditor.setVisibility(View.VISIBLE);
     }
 
     private void openDraftInEditor(int index) {
+        isNewUnsavedDraft = false;
         currentDraftIndex = index;
         Draft d = drafts.get(index);
+        originalDraftTitle = d.title;
+        originalDraftContent = d.content;
 
         isUpdatingEditorFields = true;
         etDraftTitle.setText(d.title);
@@ -375,20 +409,51 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void backToDraftList() {
-        saveCurrentDraftFromEditor();
+        String currentTitle = etDraftTitle.getText().toString().trim();
+        String currentContent = etScript.getText().toString();
+        boolean hasText = !currentContent.trim().isEmpty();
+        boolean isModified = isNewUnsavedDraft
+                || !currentTitle.equals(originalDraftTitle)
+                || !currentContent.equals(originalDraftContent);
+
+        if (hasText && isModified) {
+            new AlertDialog.Builder(this)
+                    .setTitle("保存草稿")
+                    .setMessage("内容栏中有未保存的文字，是否保存到草稿列表？")
+                    .setPositiveButton("保存", (dialog, which) -> {
+                            finishBackToDraftList();
+                    })
+                    .setNegativeButton("不保存", (dialog, which) -> finishBackToDraftList())
+                    .setNeutralButton("取消", null)
+                    .show();
+        } else {
+            finishBackToDraftList();
+        }
+    }
+
+    private void finishBackToDraftList() {
         renderDraftList();
         layoutEditor.setVisibility(View.GONE);
         layoutDraftList.setVisibility(View.VISIBLE);
     }
 
     private void saveCurrentDraftFromEditor() {
-        if (currentDraftIndex >= 0 && currentDraftIndex < drafts.size()) {
+        String title = etDraftTitle.getText().toString().trim();
+        if (title.isEmpty()) title = getTodayDateTitle();
+        String content = etScript.getText().toString();
+
+        if (isNewUnsavedDraft) {
+            drafts.add(0, new Draft(UUID.randomUUID().toString(), title, content));
+            currentDraftIndex = 0;
+            isNewUnsavedDraft = false;
+        } else if (currentDraftIndex >= 0 && currentDraftIndex < drafts.size()) {
             Draft d = drafts.get(currentDraftIndex);
-            d.title = etDraftTitle.getText().toString().trim();
-            if (d.title.isEmpty()) d.title = "未命名草稿";
-            d.content = etScript.getText().toString();
-            saveDrafts();
+            d.title = title;
+            d.content = content;
         }
+        originalDraftTitle = title;
+        originalDraftContent = content;
+        saveDrafts();
     }
 
     // =========================================================================
@@ -632,7 +697,7 @@ public class MainActivity extends AppCompatActivity {
             @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
                 currentSpeed = Math.max(10, progress);
                 tvSpeedValue.setText(currentSpeed + " px/s");
-                tvPrompterSpeedIndicator.setText(currentSpeed + " px");
+                tvPrompterSpeedIndicator.setText(String.valueOf(currentSpeed));
                 saveSettings();
             }
             @Override public void onStartTrackingTouch(SeekBar seekBar) {}
@@ -665,12 +730,21 @@ public class MainActivity extends AppCompatActivity {
         btnPrompterPlayPause.setOnClickListener(v -> togglePrompterPlayPause("屏幕按钮"));
         findViewById(R.id.btnPrompterSpeedMinus).setOnClickListener(v -> adjustSpeed(-SPEED_STEP, "手动减速"));
         findViewById(R.id.btnPrompterSpeedPlus).setOnClickListener(v -> adjustSpeed(SPEED_STEP, "手动加速"));
-        findViewById(R.id.btnPrompterMirror).setOnClickListener(v -> {
+        btnPrompterMirror.setOnClickListener(v -> {
             isMirror = !isMirror;
             cbMirror.setChecked(isMirror);
             applyMirror();
+        applyAlignment();
             saveSettings();
             showHud("🪞 镜像(水平+180°): " + (isMirror ? "开" : "关"));
+            wakeFloatingBar();
+        });
+
+        btnPrompterAlign.setOnClickListener(v -> {
+            isAlignLeft = !isAlignLeft;
+            applyAlignment();
+            saveSettings();
+            showHud(isAlignLeft ? "📐 已切换为左对齐" : "📐 已切换为居中对齐");
             wakeFloatingBar();
         });
 
@@ -683,6 +757,7 @@ public class MainActivity extends AppCompatActivity {
                 setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
                 showHud("📱 已切换为竖屏");
             }
+            updateFloatingBarSpacing();
             wakeFloatingBar();
         });
 
@@ -711,29 +786,20 @@ public class MainActivity extends AppCompatActivity {
 
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
-                    swipeAnchorY = event.getRawY();
-                    isSwipeAdjustingSpeed = false;
+                    lastTouchY = event.getRawY();
                     break;
                 case MotionEvent.ACTION_MOVE:
-                    float dy = swipeAnchorY - event.getRawY();
-                    if (Math.abs(dy) >= 85f) {
-                        isSwipeAdjustingSpeed = true;
-                        if (dy > 0) {
-                            adjustSpeed(SPEED_STEP, "上滑屏幕 ➔ 加速");
-                        } else {
-                            adjustSpeed(-SPEED_STEP, "下滑屏幕 ➔ 减速");
-                        }
-                        swipeAnchorY = event.getRawY();
-                        wakeFloatingBar();
-                    }
+                    float rawY = event.getRawY();
+                    float dy = isMirror ? (rawY - lastTouchY) : (lastTouchY - rawY);
+                    lastTouchY = rawY;
+                    int maxScroll = Math.max(0, framePrompterContent.getHeight() - prompterScrollContainer.getHeight());
+                    currentScrollY = Math.max(0f, Math.min(maxScroll, currentScrollY + dy));
+                    framePrompterContent.setTranslationY(-currentScrollY);
+                    wakeFloatingBar();
                     break;
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_CANCEL:
                     wakeFloatingBar();
-                    if (isSwipeAdjustingSpeed) {
-                        isSwipeAdjustingSpeed = false;
-                        return true;
-                    }
                     break;
             }
             return true;
@@ -765,6 +831,7 @@ public class MainActivity extends AppCompatActivity {
 
         isLandscape = true;
         setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+        updateFloatingBarSpacing();
 
         layoutEditor.setVisibility(View.GONE);
         layoutPrompter.setVisibility(View.VISIBLE);
@@ -822,9 +889,23 @@ public class MainActivity extends AppCompatActivity {
         if (isMirror) {
             prompterScrollContainer.setScaleX(-1.0f);
             prompterScrollContainer.setRotation(180f);
+            btnPrompterMirror.setColorFilter(Color.parseColor("#818CF8"));
         } else {
             prompterScrollContainer.setScaleX(1.0f);
             prompterScrollContainer.setRotation(0f);
+            btnPrompterMirror.setColorFilter(Color.parseColor("#CBD5E1"));
+        }
+    }
+
+    private void applyAlignment() {
+        if (isAlignLeft) {
+            tvPrompterText.setGravity(Gravity.START);
+            btnPrompterAlign.setImageResource(R.drawable.ic_align_left);
+            btnPrompterAlign.setColorFilter(Color.parseColor("#818CF8"));
+        } else {
+            tvPrompterText.setGravity(Gravity.CENTER_HORIZONTAL);
+            btnPrompterAlign.setImageResource(R.drawable.ic_align_center);
+            btnPrompterAlign.setColorFilter(Color.parseColor("#CBD5E1"));
         }
     }
 
@@ -876,7 +957,7 @@ public class MainActivity extends AppCompatActivity {
         currentSpeed = Math.max(10, Math.min(200, currentSpeed + delta));
         seekSpeed.setProgress(currentSpeed);
         tvSpeedValue.setText(currentSpeed + " px/s");
-        tvPrompterSpeedIndicator.setText(currentSpeed + " px");
+        tvPrompterSpeedIndicator.setText(String.valueOf(currentSpeed));
         showHud("⚡ 速度: " + currentSpeed + " px/s (" + trigger + ")");
         saveSettings();
     }
@@ -918,6 +999,22 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private final Runnable hideHudRunnable = () -> tvPrompterHud.setVisibility(View.GONE);
+
+    private void updateFloatingBarSpacing() {
+        if (layoutFloatingBarInner == null) return;
+        float density = getResources().getDisplayMetrics().density;
+        int gapPx = isLandscape ? (int) (8 * density) : 0;
+        int padH = isLandscape ? (int) (14 * density) : (int) (6 * density);
+        int padV = isLandscape ? (int) (6 * density) : (int) (4 * density);
+        layoutFloatingBarInner.setPadding(padH, padV, padH, padV);
+
+        for (int i = 0; i < layoutFloatingBarInner.getChildCount(); i++) {
+            View child = layoutFloatingBarInner.getChildAt(i);
+            LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) child.getLayoutParams();
+            lp.setMarginStart(i == 0 ? 0 : gapPx);
+            child.setLayoutParams(lp);
+        }
+    }
 
     private void wakeFloatingBar() {
         layoutFloatingBar.setVisibility(View.VISIBLE);

@@ -137,7 +137,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="🎧 耳机/手势：单击耳机或轻点屏幕=启停 · 滑动屏幕/耳机=调速(±10)"
+                android:text="🎧 耳机：单击=启停 · 滑音量=调速(±10) | 屏幕：轻点=启停 · 上下滑=调位置"
                 android:textColor="#94A3B8"
                 android:textSize="11sp" />
 
@@ -366,112 +366,143 @@
             android:textStyle="bold"
             android:visibility="gone" />
 
-        <LinearLayout
+        <HorizontalScrollView
             android:id="@+id/layoutFloatingBar"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="bottom|center_horizontal"
-            android:layout_marginBottom="36dp"
+            android:layout_marginStart="6dp"
+            android:layout_marginEnd="6dp"
+            android:layout_marginBottom="28dp"
             android:background="#E61E293B"
-            android:paddingStart="16dp"
-            android:paddingTop="8dp"
-            android:paddingEnd="16dp"
-            android:paddingBottom="8dp"
-            android:orientation="horizontal"
-            android:gravity="center_vertical">
+            android:scrollbars="none">
 
-            <ImageButton
-                android:id="@+id/btnPrompterExit"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:background="?android:attr/selectableItemBackgroundBorderless"
-                android:src="@android:drawable/ic_menu_close_clear_cancel"
-                android:contentDescription="退出" />
-
-            <ImageButton
-                android:id="@+id/btnPrompterRestart"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:background="?android:attr/selectableItemBackgroundBorderless"
-                android:src="@android:drawable/ic_menu_revert"
-                android:contentDescription="重开" />
-
-            <ImageButton
-                android:id="@+id/btnPrompterPlayPause"
-                android:layout_width="48dp"
-                android:layout_height="48dp"
-                android:background="?android:attr/selectableItemBackgroundBorderless"
-                android:src="@android:drawable/ic_media_pause"
-                android:contentDescription="播放暂停" />
-
-            <Button
-                android:id="@+id/btnPrompterSpeedMinus"
-                style="?android:attr/borderlessButtonStyle"
-                android:layout_width="36dp"
-                android:layout_height="36dp"
-                android:text="-"
-                android:textColor="#FFFFFF"
-                android:textSize="18sp" />
-
-            <TextView
-                android:id="@+id/tvPrompterSpeedIndicator"
+            <LinearLayout
+                android:id="@+id/layoutFloatingBarInner"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="45 px"
-                android:textColor="#818CF8"
-                android:textSize="13sp"
-                android:textStyle="bold" />
+                android:paddingStart="6dp"
+                android:paddingTop="4dp"
+                android:paddingEnd="6dp"
+                android:paddingBottom="4dp"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
 
-            <Button
-                android:id="@+id/btnPrompterSpeedPlus"
-                style="?android:attr/borderlessButtonStyle"
-                android:layout_width="36dp"
-                android:layout_height="36dp"
-                android:text="+"
-                android:textColor="#FFFFFF"
-                android:textSize="18sp" />
+                <ImageButton
+                    android:id="@+id/btnPrompterExit"
+                    android:layout_width="30dp"
+                    android:layout_height="34dp"
+                    android:padding="5dp"
+                    android:scaleType="centerInside"
+                    android:background="?android:attr/selectableItemBackgroundBorderless"
+                    android:src="@android:drawable/ic_menu_close_clear_cancel"
+                    android:contentDescription="退出" />
 
-            <ImageButton
-                android:id="@+id/btnPrompterMirror"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:background="?android:attr/selectableItemBackgroundBorderless"
-                android:src="@android:drawable/ic_menu_rotate"
-                android:contentDescription="镜像" />
+                <ImageButton
+                    android:id="@+id/btnPrompterRestart"
+                    android:layout_width="30dp"
+                    android:layout_height="34dp"
+                    android:padding="5dp"
+                    android:scaleType="centerInside"
+                    android:background="?android:attr/selectableItemBackgroundBorderless"
+                    android:src="@android:drawable/ic_menu_revert"
+                    android:contentDescription="重开" />
 
-            <Button
-                android:id="@+id/btnPrompterOrientation"
-                style="?android:attr/borderlessButtonStyle"
-                android:layout_width="wrap_content"
-                android:layout_height="36dp"
-                android:minWidth="0dp"
-                android:paddingStart="8dp"
-                android:paddingEnd="8dp"
-                android:text="横/竖"
-                android:textColor="#CBD5E1"
-                android:textSize="12sp" />
+                <ImageButton
+                    android:id="@+id/btnPrompterPlayPause"
+                    android:layout_width="34dp"
+                    android:layout_height="34dp"
+                    android:padding="3dp"
+                    android:scaleType="centerInside"
+                    android:background="?android:attr/selectableItemBackgroundBorderless"
+                    android:src="@android:drawable/ic_media_pause"
+                    android:contentDescription="播放暂停" />
 
-            <Button
-                android:id="@+id/btnPrompterFontMinus"
-                style="?android:attr/borderlessButtonStyle"
-                android:layout_width="34dp"
-                android:layout_height="36dp"
-                android:minWidth="0dp"
-                android:padding="0dp"
-                android:text="A-"
-                android:textColor="#E2E8F0"
-                android:textSize="12sp" />
+                <Button
+                    android:id="@+id/btnPrompterSpeedMinus"
+                    style="?android:attr/borderlessButtonStyle"
+                    android:layout_width="26dp"
+                    android:layout_height="34dp"
+                    android:minWidth="0dp"
+                    android:padding="0dp"
+                    android:text="-"
+                    android:textColor="#FFFFFF"
+                    android:textSize="16sp" />
 
-            <Button
-                android:id="@+id/btnPrompterFontPlus"
-                style="?android:attr/borderlessButtonStyle"
-                android:layout_width="34dp"
-                android:layout_height="36dp"
-                android:minWidth="0dp"
-                android:padding="0dp"
-                android:text="A+"
-                android:textColor="#E2E8F0"
-                android:textSize="12sp" />
-        </LinearLayout>
+                <TextView
+                    android:id="@+id/tvPrompterSpeedIndicator"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:minWidth="22dp"
+                    android:gravity="center"
+                    android:text="45"
+                    android:textColor="#818CF8"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+
+                <Button
+                    android:id="@+id/btnPrompterSpeedPlus"
+                    style="?android:attr/borderlessButtonStyle"
+                    android:layout_width="26dp"
+                    android:layout_height="34dp"
+                    android:minWidth="0dp"
+                    android:padding="0dp"
+                    android:text="+"
+                    android:textColor="#FFFFFF"
+                    android:textSize="16sp" />
+
+                <Button
+                    android:id="@+id/btnPrompterFontMinus"
+                    style="?android:attr/borderlessButtonStyle"
+                    android:layout_width="28dp"
+                    android:layout_height="34dp"
+                    android:minWidth="0dp"
+                    android:padding="0dp"
+                    android:text="A-"
+                    android:textColor="#E2E8F0"
+                    android:textSize="11sp" />
+
+                <Button
+                    android:id="@+id/btnPrompterFontPlus"
+                    style="?android:attr/borderlessButtonStyle"
+                    android:layout_width="28dp"
+                    android:layout_height="34dp"
+                    android:minWidth="0dp"
+                    android:padding="0dp"
+                    android:text="A+"
+                    android:textColor="#E2E8F0"
+                    android:textSize="11sp" />
+
+                <ImageButton
+                    android:id="@+id/btnPrompterMirror"
+                    android:layout_width="30dp"
+                    android:layout_height="34dp"
+                    android:padding="5dp"
+                    android:scaleType="centerInside"
+                    android:background="?android:attr/selectableItemBackgroundBorderless"
+                    android:src="@drawable/ic_mirror"
+                    android:contentDescription="镜像" />
+
+                <ImageButton
+                    android:id="@+id/btnPrompterAlign"
+                    android:layout_width="30dp"
+                    android:layout_height="34dp"
+                    android:padding="5dp"
+                    android:scaleType="centerInside"
+                    android:background="?android:attr/selectableItemBackgroundBorderless"
+                    android:src="@drawable/ic_align_center"
+                    android:contentDescription="对齐方式" />
+
+                <ImageButton
+                    android:id="@+id/btnPrompterOrientation"
+                    android:layout_width="30dp"
+                    android:layout_height="34dp"
+                    android:padding="5dp"
+                    android:scaleType="centerInside"
+                    android:background="?android:attr/selectableItemBackgroundBorderless"
+                    android:src="@drawable/ic_orientation"
+                    android:contentDescription="横竖屏" />
+            </LinearLayout>
+        </HorizontalScrollView>
     </FrameLayout>
 </FrameLayout>

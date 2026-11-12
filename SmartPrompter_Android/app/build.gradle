@@ -19,8 +19,8 @@ android {
         applicationId "com.smartprompter.app"
         minSdk 21
         targetSdk 34
-        versionCode 17
-        versionName "1.17.0"
+        versionCode 22
+        versionName "1.22.0"
     }
 
     buildTypes {
