@@ -48,17 +48,10 @@ public class MainActivity extends AppCompatActivity {
     private static final String KEY_SCRIPT = "key_script";
     private static final String KEY_SPEED = "key_speed";
     private static final String KEY_FONT_SIZE = "key_font_size";
-    private static final String KEY_MIRROR_MODE = "key_mirror_mode";
+    private static final String KEY_MIRROR = "key_mirror";
     private static final String KEY_FOCUS_LINE = "key_focus_line";
 
     private static final int SPEED_STEP = 10;
-
-    private static final String[] MIRROR_LABELS = {
-            "正常显示",
-            "水平镜像",
-            "旋转180°",
-            "水平镜像+180°"
-    };
 
     private static final String DEFAULT_SAMPLE = "大家好，欢迎来到今天的分享。\n\n"
             + "今天我们要聊的是：如何用科技让工作与创作更高效。\n\n"
@@ -75,7 +68,7 @@ public class MainActivity extends AppCompatActivity {
     private TextView tvSpeedValue;
     private SeekBar seekFontSize;
     private TextView tvFontSizeValue;
-    private Button btnMirrorMode;
+    private CheckBox cbMirror;
     private CheckBox cbFocusLine;
     private View viewFocusLine;
     private TextView tvPrompterText;
@@ -90,7 +83,7 @@ public class MainActivity extends AppCompatActivity {
 
     private int currentSpeed = 45;
     private int currentFontSize = 48;
-    private int mirrorMode = 0; // 0:正常, 1:水平镜像, 2:旋转180°, 3:水平镜像+旋转180°
+    private boolean isMirror = false;
     private boolean showFocusLine = true;
     private boolean isPlaying = false;
     private boolean isPrompterActive = false;
@@ -137,7 +130,7 @@ public class MainActivity extends AppCompatActivity {
         tvSpeedValue = findViewById(R.id.tvSpeedValue);
         seekFontSize = findViewById(R.id.seekFontSize);
         tvFontSizeValue = findViewById(R.id.tvFontSizeValue);
-        btnMirrorMode = findViewById(R.id.btnMirrorMode);
+        cbMirror = findViewById(R.id.cbMirror);
         cbFocusLine = findViewById(R.id.cbFocusLine);
         viewFocusLine = findViewById(R.id.viewFocusLine);
         tvPrompterText = findViewById(R.id.tvPrompterText);
@@ -156,7 +149,7 @@ public class MainActivity extends AppCompatActivity {
         String savedText = sp.getString(KEY_SCRIPT, DEFAULT_SAMPLE);
         currentSpeed = sp.getInt(KEY_SPEED, 45);
         currentFontSize = sp.getInt(KEY_FONT_SIZE, 48);
-        mirrorMode = sp.getInt(KEY_MIRROR_MODE, 0) % 4;
+        isMirror = sp.getBoolean(KEY_MIRROR, false);
         showFocusLine = sp.getBoolean(KEY_FOCUS_LINE, true);
 
         etScript.setText(savedText);
@@ -167,7 +160,7 @@ public class MainActivity extends AppCompatActivity {
         seekFontSize.setProgress(currentFontSize);
         tvFontSizeValue.setText(currentFontSize + " sp");
 
-        btnMirrorMode.setText("方向: " + MIRROR_LABELS[mirrorMode]);
+        cbMirror.setChecked(isMirror);
         cbFocusLine.setChecked(showFocusLine);
 
         updateWordCount();
@@ -178,7 +171,7 @@ public class MainActivity extends AppCompatActivity {
         editor.putString(KEY_SCRIPT, etScript.getText().toString());
         editor.putInt(KEY_SPEED, currentSpeed);
         editor.putInt(KEY_FONT_SIZE, currentFontSize);
-        editor.putInt(KEY_MIRROR_MODE, mirrorMode);
+        editor.putBoolean(KEY_MIRROR, isMirror);
         editor.putBoolean(KEY_FOCUS_LINE, showFocusLine);
         editor.apply();
     }
@@ -453,8 +446,9 @@ public class MainActivity extends AppCompatActivity {
             @Override public void onStopTrackingTouch(SeekBar seekBar) {}
         });
 
-        btnMirrorMode.setOnClickListener(v -> {
-            cycleMirrorMode(false);
+        cbMirror.setOnCheckedChangeListener((btn, isChecked) -> {
+            isMirror = isChecked;
+            savePreferences();
         });
 
         cbFocusLine.setOnCheckedChangeListener((btn, isChecked) -> {
@@ -518,12 +512,12 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void cycleMirrorMode(boolean inPrompter) {
-        mirrorMode = (mirrorMode + 1) % 4;
-        btnMirrorMode.setText("方向: " + MIRROR_LABELS[mirrorMode]);
+        isMirror = !isMirror;
+        cbMirror.setChecked(isMirror);
         applyMirror();
         savePreferences();
         if (inPrompter) {
-            showHud("🔄 " + MIRROR_LABELS[mirrorMode]);
+            showHud("🪞 镜像(水平+180°): " + (isMirror ? "开" : "关"));
             wakeFloatingBar();
         }
     }
