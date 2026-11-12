@@ -4,12 +4,18 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.ActivityInfo;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
+import android.media.MediaPlayer;
+import androidx.core.app.NotificationCompat;
+import androidx.media.app.NotificationCompat.MediaStyle;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -122,12 +128,14 @@ public class MainActivity extends AppCompatActivity {
     private boolean showFocusLine = true;
     private boolean isPlaying = false;
     private boolean isPrompterActive = false;
+    private boolean isLandscape = true;
 
     private float currentScrollY = 0f;
     private long lastFrameTime = 0;
 
     // 蓝牙耳机 MediaSession 与极微底噪保活音轨
     private MediaSessionCompat mediaSession;
+    private MediaPlayer silentMediaPlayer;
     private AudioManager audioManager;
     private AudioFocusRequest audioFocusRequest;
     private VolumeChangeReceiver volumeReceiver;
@@ -394,11 +402,51 @@ public class MainActivity extends AppCompatActivity {
     // 蓝牙耳机保活与 MediaSession 拦截 (OPPO / ColorOS 深度适配)
     // =========================================================================
 
+    private void startSilentMediaPlayer() {
+        try {
+            if (silentMediaPlayer == null) {
+                silentMediaPlayer = MediaPlayer.create(this, R.raw.keepalive);
+                if (silentMediaPlayer != null) {
+                    silentMediaPlayer.setLooping(true);
+                    silentMediaPlayer.setVolume(0.01f, 0.01f);
+                }
+            }
+            if (silentMediaPlayer != null && !silentMediaPlayer.isPlaying()) {
+                silentMediaPlayer.start();
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void showMediaNotification() {
+        try {
+            String channelId = "prompter_media_channel";
+            NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm == null || mediaSession == null) return;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                NotificationChannel channel = new NotificationChannel(
+                        channelId, "提词器耳机遥控", NotificationManager.IMPORTANCE_LOW);
+                channel.setSound(null, null);
+                nm.createNotificationChannel(channel);
+            }
+            NotificationCompat.Builder builder = new NotificationCompat.Builder(this, channelId)
+                    .setSmallIcon(android.R.drawable.ic_media_play)
+                    .setContentTitle("智能提词器")
+                    .setContentText("蓝牙耳机遥控已激活")
+                    .setOngoing(true)
+                    .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                    .setStyle(new MediaStyle().setMediaSession(mediaSession.getSessionToken()));
+            nm.notify(1001, builder.build());
+        } catch (Exception ignored) {}
+    }
+
     private void setupMediaSessionAndAudioFocus() {
         audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
         requestExclusiveAudioFocus();
+        startSilentMediaPlayer();
+        showMediaNotification();
+        startSilentMediaPlayer();
 
-        mediaSession = new MediaSessionCompat(this, "SmartPrompterMediaSession");
+        mediaSession = new MediaSessionCompat(this, "PrompterMediaSession");
         mediaSession.setFlags(MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS
                 | MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS);
 
@@ -412,7 +460,7 @@ public class MainActivity extends AppCompatActivity {
                     if (isPrompterActive) {
                         togglePrompterPlayPause("TWS耳机");
                     } else {
-                        tvRemoteSignalBadge.setText("🟢 收到耳机指令 (开启提词后生效)");
+                        tvRemoteSignalBadge.setText("🟢 收到耳机播放指令 (开启提词后生效)");
                     }
                 });
             }
@@ -424,7 +472,17 @@ public class MainActivity extends AppCompatActivity {
                     if (isPrompterActive) {
                         togglePrompterPlayPause("TWS耳机");
                     } else {
-                        tvRemoteSignalBadge.setText("🟢 收到耳机指令 (开启提词后生效)");
+                        tvRemoteSignalBadge.setText("🟢 收到耳机暂停指令 (开启提词后生效)");
+                    }
+                });
+            }
+
+            @Override
+            public void onStop() {
+                if (isDebounced()) return;
+                runOnUiThread(() -> {
+                    if (isPrompterActive) {
+                        togglePrompterPlayPause("TWS耳机");
                     }
                 });
             }
@@ -471,6 +529,7 @@ public class MainActivity extends AppCompatActivity {
         });
 
         mediaSession.setActive(true);
+        showMediaNotification();
         tvRemoteSignalBadge.setText("🟢 蓝牙耳机按键与音量监听已激活");
         tvRemoteSignalBadge.setTextColor(Color.parseColor("#34D399"));
     }
@@ -512,9 +571,10 @@ public class MainActivity extends AppCompatActivity {
                 .setActions(PlaybackStateCompat.ACTION_PLAY
                         | PlaybackStateCompat.ACTION_PAUSE
                         | PlaybackStateCompat.ACTION_PLAY_PAUSE
+                        | PlaybackStateCompat.ACTION_STOP
                         | PlaybackStateCompat.ACTION_SKIP_TO_NEXT
                         | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS)
-                .setState(state, (long) currentScrollY, 1.0f)
+                .setState(PlaybackStateCompat.STATE_PLAYING, 0, 1.0f)
                 .build();
         mediaSession.setPlaybackState(playbackState);
     }
@@ -663,6 +723,18 @@ public class MainActivity extends AppCompatActivity {
             wakeFloatingBar();
         });
 
+        findViewById(R.id.btnPrompterOrientation).setOnClickListener(v -> {
+            isLandscape = !isLandscape;
+            if (isLandscape) {
+                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+                showHud("📱 已切换为横屏");
+            } else {
+                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+                showHud("📱 已切换为竖屏");
+            }
+            wakeFloatingBar();
+        });
+
         tapGestureDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
             @Override
             public boolean onSingleTapConfirmed(MotionEvent e) {
@@ -731,6 +803,9 @@ public class MainActivity extends AppCompatActivity {
             updatePlaybackState(PlaybackStateCompat.STATE_PLAYING);
         }
 
+        isLandscape = true;
+        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+
         layoutEditor.setVisibility(View.GONE);
         layoutPrompter.setVisibility(View.VISIBLE);
 
@@ -769,6 +844,8 @@ public class MainActivity extends AppCompatActivity {
                 savedOriginalVolume = -1;
             } catch (Exception ignored) {}
         }
+
+        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
 
         layoutPrompter.setVisibility(View.GONE);
         layoutEditor.setVisibility(View.VISIBLE);
@@ -909,6 +986,12 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        if (silentMediaPlayer != null) {
+            try {
+                silentMediaPlayer.stop();
+                silentMediaPlayer.release();
+            } catch (Exception ignored) {}
+        }
         if (mediaSession != null) {
             mediaSession.release();
         }
