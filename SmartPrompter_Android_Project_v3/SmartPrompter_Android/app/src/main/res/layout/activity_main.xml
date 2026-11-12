@@ -1,0 +1,359 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#0F172A">
+
+    <LinearLayout
+        android:id="@+id/layoutEditor"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingBottom="12dp">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="智能提词器 · 蓝牙遥控版"
+                android:textColor="#FFFFFF"
+                android:textSize="18sp"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/btnLaunchPrompter"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:text="开启提词 ▶"
+                android:textColor="#FFFFFF"
+                android:backgroundTint="#4F46E5" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="#1E293B"
+            android:padding="12dp"
+            android:layout_marginBottom="12dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="🎧 蓝牙耳机按键与音量调速功能"
+                android:textColor="#818CF8"
+                android:textStyle="bold"
+                android:textSize="13sp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="• 耳机按键(单击/双击/捏一下)：开始 / 暂停提词\n• 耳机/手机音量键：调大=加速，调小=减速"
+                android:textColor="#CBD5E1"
+                android:textSize="12sp"
+                android:layout_marginTop="4dp" />
+
+            <TextView
+                android:id="@+id/tvRemoteSignalBadge"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="🟢 蓝牙耳机监听已就绪"
+                android:textColor="#34D399"
+                android:textSize="11sp"
+                android:layout_marginTop="6dp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:background="#1E293B"
+            android:padding="12dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginBottom="6dp">
+
+                <TextView
+                    android:id="@+id/tvWordCount"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="0 字 · 约 0 秒"
+                    android:textColor="#94A3B8"
+                    android:textSize="12sp" />
+
+                <Button
+                    android:id="@+id/btnLoadSample"
+                    style="?android:attr/borderlessButtonStyle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="32dp"
+                    android:text="载入示例"
+                    android:textColor="#818CF8"
+                    android:textSize="11sp" />
+
+                <Button
+                    android:id="@+id/btnClearScript"
+                    style="?android:attr/borderlessButtonStyle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="32dp"
+                    android:text="清空"
+                    android:textColor="#F43F5E"
+                    android:textSize="11sp" />
+            </LinearLayout>
+
+            <EditText
+                android:id="@+id/etScript"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:background="@null"
+                android:gravity="top|start"
+                android:hint="在此输入或粘贴剧本内容..."
+                android:textColor="#F8FAFC"
+                android:textColorHint="#64748B"
+                android:textSize="15sp"
+                android:inputType="textMultiLine"
+                android:scrollbars="vertical" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingTop="12dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="80dp"
+                    android:layout_height="wrap_content"
+                    android:text="滚动速度:"
+                    android:textColor="#E2E8F0"
+                    android:textSize="12sp" />
+
+                <SeekBar
+                    android:id="@+id/seekSpeed"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:max="200"
+                    android:progress="45" />
+
+                <TextView
+                    android:id="@+id/tvSpeedValue"
+                    android:layout_width="55dp"
+                    android:layout_height="wrap_content"
+                    android:text="45 px/s"
+                    android:textColor="#818CF8"
+                    android:textSize="12sp"
+                    android:gravity="end" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:layout_marginTop="6dp">
+
+                <TextView
+                    android:layout_width="80dp"
+                    android:layout_height="wrap_content"
+                    android:text="字体大小:"
+                    android:textColor="#E2E8F0"
+                    android:textSize="12sp" />
+
+                <SeekBar
+                    android:id="@+id/seekFontSize"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:max="90"
+                    android:progress="48" />
+
+                <TextView
+                    android:id="@+id/tvFontSizeValue"
+                    android:layout_width="55dp"
+                    android:layout_height="wrap_content"
+                    android:text="48 sp"
+                    android:textColor="#818CF8"
+                    android:textSize="12sp"
+                    android:gravity="end" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="4dp">
+
+                <CheckBox
+                    android:id="@+id/cbMirror"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="水平镜像(分光玻璃)"
+                    android:textColor="#CBD5E1"
+                    android:textSize="12sp" />
+
+                <CheckBox
+                    android:id="@+id/cbFocusLine"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="对齐参考线"
+                    android:checked="true"
+                    android:textColor="#CBD5E1"
+                    android:textSize="12sp"
+                    android:layout_marginStart="16dp" />
+            </LinearLayout>
+        </LinearLayout>
+    </LinearLayout>
+
+    <FrameLayout
+        android:id="@+id/layoutPrompter"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#000000"
+        android:visibility="gone">
+
+        <ScrollView
+            android:id="@+id/prompterScrollContainer"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:scrollbars="none"
+            android:overScrollMode="never">
+
+            <LinearLayout
+                android:id="@+id/framePrompterContent"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingTop="220dp"
+                android:paddingBottom="550dp"
+                android:paddingStart="28dp"
+                android:paddingEnd="28dp">
+
+                <TextView
+                    android:id="@+id/tvPrompterText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_horizontal"
+                    android:lineSpacingMultiplier="1.4"
+                    android:textColor="#FFFFFF"
+                    android:textSize="48sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+        </ScrollView>
+
+        <View
+            android:id="@+id/viewFocusLine"
+            android:layout_width="match_parent"
+            android:layout_height="2dp"
+            android:background="#EF4444"
+            android:layout_marginTop="200dp" />
+
+        <TextView
+            android:id="@+id/tvPrompterHud"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|center_horizontal"
+            android:layout_marginTop="32dp"
+            android:background="#CC1E293B"
+            android:paddingStart="16dp"
+            android:paddingTop="8dp"
+            android:paddingEnd="16dp"
+            android:paddingBottom="8dp"
+            android:textColor="#818CF8"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
+
+        <LinearLayout
+            android:id="@+id/layoutFloatingBar"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|center_horizontal"
+            android:layout_marginBottom="36dp"
+            android:background="#E61E293B"
+            android:paddingStart="16dp"
+            android:paddingTop="8dp"
+            android:paddingEnd="16dp"
+            android:paddingBottom="8dp"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <ImageButton
+                android:id="@+id/btnPrompterExit"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:src="@android:drawable/ic_menu_close_clear_cancel"
+                android:contentDescription="退出" />
+
+            <ImageButton
+                android:id="@+id/btnPrompterRestart"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:src="@android:drawable/ic_menu_revert"
+                android:contentDescription="重开" />
+
+            <ImageButton
+                android:id="@+id/btnPrompterPlayPause"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:src="@android:drawable/ic_media_pause"
+                android:contentDescription="播放暂停" />
+
+            <Button
+                android:id="@+id/btnPrompterSpeedMinus"
+                style="?android:attr/borderlessButtonStyle"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:text="-"
+                android:textColor="#FFFFFF"
+                android:textSize="18sp" />
+
+            <TextView
+                android:id="@+id/tvPrompterSpeedIndicator"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="45 px"
+                android:textColor="#818CF8"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/btnPrompterSpeedPlus"
+                style="?android:attr/borderlessButtonStyle"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:text="+"
+                android:textColor="#FFFFFF"
+                android:textSize="18sp" />
+
+            <ImageButton
+                android:id="@+id/btnPrompterMirror"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:src="@android:drawable/ic_menu_rotate"
+                android:contentDescription="镜像" />
+        </LinearLayout>
+    </FrameLayout>
+</FrameLayout>
