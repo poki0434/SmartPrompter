@@ -27,14 +27,5 @@
                 <action android:name="android.intent.action.MEDIA_BUTTON" />
             </intent-filter>
         </activity>
-
-        <!-- 注册 MediaButtonReceiver，确保 ColorOS 将耳机按键路由到本应用 -->
-        <receiver
-            android:name="androidx.media.session.MediaButtonReceiver"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.MEDIA_BUTTON" />
-            </intent-filter>
-        </receiver>
     </application>
 </manifest>

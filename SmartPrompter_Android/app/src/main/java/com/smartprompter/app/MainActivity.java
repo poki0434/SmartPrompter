@@ -1,8 +1,6 @@
 package com.smartprompter.app;
 
-import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
-import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -40,7 +38,6 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
-import androidx.media.session.MediaButtonReceiver;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -162,16 +159,6 @@ public class MainActivity extends AppCompatActivity {
         setupEventListeners();
         renderDraftList();
 
-        // 处理可能通过 MediaButtonReceiver 启动的媒体按键 Intent
-        MediaButtonReceiver.handleIntent(mediaSession, getIntent());
-    }
-
-    @Override
-    protected void onNewIntent(Intent intent) {
-        super.onNewIntent(intent);
-        if (mediaSession != null) {
-            MediaButtonReceiver.handleIntent(mediaSession, intent);
-        }
     }
 
     private void initViews() {
@@ -453,18 +440,9 @@ public class MainActivity extends AppCompatActivity {
         audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
         requestExclusiveAudioFocus();
 
-        ComponentName mediaButtonReceiver = new ComponentName(this, MediaButtonReceiver.class);
-        mediaSession = new MediaSessionCompat(this, "SmartPrompterMediaSession", mediaButtonReceiver, null);
+        mediaSession = new MediaSessionCompat(this, "SmartPrompterMediaSession");
         mediaSession.setFlags(MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS
                 | MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS);
-
-        Intent mediaButtonIntent = new Intent(Intent.ACTION_MEDIA_BUTTON);
-        mediaButtonIntent.setClass(this, MediaButtonReceiver.class);
-        int flags = Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
-                ? PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT
-                : PendingIntent.FLAG_UPDATE_CURRENT;
-        PendingIntent mbrIntent = PendingIntent.getBroadcast(this, 0, mediaButtonIntent, flags);
-        mediaSession.setMediaButtonReceiver(mbrIntent);
 
         // 注入标准 MediaMetadata，确保 ColorOS 媒体中心识别本应用为有效播放器
         mediaSession.setMetadata(new MediaMetadataCompat.Builder()
