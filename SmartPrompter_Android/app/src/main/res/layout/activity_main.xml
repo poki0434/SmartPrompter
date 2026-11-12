@@ -151,7 +151,7 @@
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:max="150"
+                    android:max="200"
                     android:progress="45" />
 
                 <TextView
@@ -230,25 +230,22 @@
         android:background="#000000"
         android:visibility="gone">
 
-        <View
-            android:id="@+id/viewFocusLine"
-            android:layout_width="match_parent"
-            android:layout_height="2dp"
-            android:background="#EF4444"
-            android:layout_marginTop="180dp" />
-
-        <FrameLayout
+        <ScrollView
             android:id="@+id/prompterScrollContainer"
             android:layout_width="match_parent"
-            android:layout_height="match_parent">
+            android:layout_height="match_parent"
+            android:scrollbars="none"
+            android:overScrollMode="never">
 
-            <FrameLayout
+            <LinearLayout
                 android:id="@+id/framePrompterContent"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="180dp"
-                android:paddingStart="32dp"
-                android:paddingEnd="32dp">
+                android:orientation="vertical"
+                android:paddingTop="220dp"
+                android:paddingBottom="550dp"
+                android:paddingStart="28dp"
+                android:paddingEnd="28dp">
 
                 <TextView
                     android:id="@+id/tvPrompterText"
@@ -259,8 +256,15 @@
                     android:textColor="#FFFFFF"
                     android:textSize="48sp"
                     android:textStyle="bold" />
-            </FrameLayout>
-        </FrameLayout>
+            </LinearLayout>
+        </ScrollView>
+
+        <View
+            android:id="@+id/viewFocusLine"
+            android:layout_width="match_parent"
+            android:layout_height="2dp"
+            android:background="#EF4444"
+            android:layout_marginTop="200dp" />
 
         <TextView
             android:id="@+id/tvPrompterHud"

@@ -6,21 +6,27 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.graphics.Color;
+import android.media.AudioAttributes;
+import android.media.AudioFocusRequest;
+import android.media.AudioFormat;
 import android.media.AudioManager;
+import android.media.AudioTrack;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.support.v4.media.session.MediaSessionCompat;
 import android.support.v4.media.session.PlaybackStateCompat;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
-import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -28,8 +34,11 @@ import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
 
 /**
- * 智能提词器主界面
- * 支持蓝牙耳机按键（播放/暂停）遥控与音量键（调大/调小）动态调速
+ * 智能提词器主界面 (OPPO / ColorOS & TWS 耳机深度适配版)
+ * 1. 使用 ScrollView 彻底解决长文本截断、显示半截的问题
+ * 2. 内置静音 AudioTrack 音频流 + MediaSessionCompat.Callback (onPlay/onPause)，
+ *    确保 OPPO Enco Air5 Pro 等 TWS 耳机单击暂停/继续稳定生效
+ * 3. 音量加/减直接调节滚动速度，并拦截系统音量弹窗
  */
 public class MainActivity extends AppCompatActivity {
 
@@ -59,7 +68,8 @@ public class MainActivity extends AppCompatActivity {
     private CheckBox cbFocusLine;
     private View viewFocusLine;
     private TextView tvPrompterText;
-    private FrameLayout framePrompterContent;
+    private LinearLayout framePrompterContent;
+    private ScrollView prompterScrollContainer;
     private TextView tvRemoteSignalBadge;
     private TextView tvPrompterHud;
 
@@ -79,8 +89,14 @@ public class MainActivity extends AppCompatActivity {
     private long lastFrameTime = 0;
 
     private MediaSessionCompat mediaSession;
+    private AudioManager audioManager;
+    private AudioFocusRequest audioFocusRequest;
+    private AudioTrack silentAudioTrack;
     private VolumeChangeReceiver volumeReceiver;
     private int lastAudioVolume = -1;
+    private int midVolume = 7;
+    private int savedOriginalVolume = -1;
+    private long lastMediaKeyTime = 0;
 
     private final Handler hudHandler = new Handler(Looper.getMainLooper());
 
@@ -92,7 +108,8 @@ public class MainActivity extends AppCompatActivity {
 
         initViews();
         loadSavedPreferences();
-        setupMediaSession();
+        startSilentAudioKeepAlive();
+        setupMediaSessionAndAudioFocus();
         setupVolumeReceiver();
         setupEventListeners();
     }
@@ -111,6 +128,7 @@ public class MainActivity extends AppCompatActivity {
         viewFocusLine = findViewById(R.id.viewFocusLine);
         tvPrompterText = findViewById(R.id.tvPrompterText);
         framePrompterContent = findViewById(R.id.framePrompterContent);
+        prompterScrollContainer = findViewById(R.id.prompterScrollContainer);
         tvRemoteSignalBadge = findViewById(R.id.tvRemoteSignalBadge);
         tvPrompterHud = findViewById(R.id.tvPrompterHud);
 
@@ -151,44 +169,107 @@ public class MainActivity extends AppCompatActivity {
         editor.apply();
     }
 
-    private void setupMediaSession() {
-        mediaSession = new MediaSessionCompat(this, "PrompterMediaSession");
+    private void startSilentAudioKeepAlive() {
+        try {
+            int sampleRate = 8000;
+            int numSamples = 8000;
+            byte[] silence = new byte[numSamples * 2];
+
+            silentAudioTrack = new AudioTrack(
+                    new AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build(),
+                    new AudioFormat.Builder()
+                            .setSampleRate(sampleRate)
+                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                            .build(),
+                    silence.length,
+                    AudioTrack.MODE_STATIC,
+                    AudioManager.AUDIO_SESSION_ID_GENERATE
+            );
+            silentAudioTrack.write(silence, 0, silence.length);
+            silentAudioTrack.setLoopPoints(0, numSamples, -1);
+            silentAudioTrack.play();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void setupMediaSessionAndAudioFocus() {
+        audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+        requestExclusiveAudioFocus();
+
+        mediaSession = new MediaSessionCompat(this, "SmartPrompterMediaSession");
         mediaSession.setFlags(MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS
                 | MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS);
 
-        PlaybackStateCompat state = new PlaybackStateCompat.Builder()
-                .setActions(PlaybackStateCompat.ACTION_PLAY
-                        | PlaybackStateCompat.ACTION_PAUSE
-                        | PlaybackStateCompat.ACTION_PLAY_PAUSE
-                        | PlaybackStateCompat.ACTION_SKIP_TO_NEXT
-                        | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS)
-                .setState(PlaybackStateCompat.STATE_PLAYING, 0, 1.0f)
-                .build();
-        mediaSession.setPlaybackState(state);
+        updatePlaybackState(PlaybackStateCompat.STATE_PAUSED);
 
         mediaSession.setCallback(new MediaSessionCompat.Callback() {
+            @Override
+            public void onPlay() {
+                if (isDebounced()) return;
+                runOnUiThread(() -> {
+                    if (isPrompterActive) {
+                        startPrompter("耳机播放");
+                    } else {
+                        tvRemoteSignalBadge.setText("🟢 收到耳机播放指令 (开启提词后生效)");
+                    }
+                });
+            }
+
+            @Override
+            public void onPause() {
+                if (isDebounced()) return;
+                runOnUiThread(() -> {
+                    if (isPrompterActive) {
+                        pausePrompter("耳机暂停");
+                    } else {
+                        tvRemoteSignalBadge.setText("🟢 收到耳机暂停指令 (开启提词后生效)");
+                    }
+                });
+            }
+
+            @Override
+            public void onSkipToNext() {
+                runOnUiThread(() -> adjustSpeed(5, "耳机切歌(下一首)"));
+            }
+
+            @Override
+            public void onSkipToPrevious() {
+                runOnUiThread(() -> adjustSpeed(-5, "耳机切歌(上一首)"));
+            }
+
             @Override
             public boolean onMediaButtonEvent(Intent mediaButtonEvent) {
                 KeyEvent event = mediaButtonEvent.getParcelableExtra(Intent.EXTRA_KEY_EVENT);
                 if (event != null && event.getAction() == KeyEvent.ACTION_DOWN) {
                     int keyCode = event.getKeyCode();
-                    switch (keyCode) {
-                        case KeyEvent.KEYCODE_HEADSETHOOK:
-                        case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
-                            togglePrompterPlayPause("蓝牙耳机按键");
-                            return true;
-                        case KeyEvent.KEYCODE_MEDIA_PLAY:
-                            startPrompter("蓝牙耳机播放键");
-                            return true;
-                        case KeyEvent.KEYCODE_MEDIA_PAUSE:
-                            pausePrompter("蓝牙耳机暂停键");
-                            return true;
-                        case KeyEvent.KEYCODE_MEDIA_NEXT:
-                            adjustSpeed(5, "蓝牙耳机切歌(下一首)");
-                            return true;
-                        case KeyEvent.KEYCODE_MEDIA_PREVIOUS:
-                            adjustSpeed(-5, "蓝牙耳机切歌(上一首)");
-                            return true;
+                    if (keyCode == KeyEvent.KEYCODE_HEADSETHOOK || keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) {
+                        if (!isDebounced()) {
+                            runOnUiThread(() -> {
+                                if (isPrompterActive) {
+                                    togglePrompterPlayPause("TWS耳机");
+                                } else {
+                                    tvRemoteSignalBadge.setText("🟢 收到TWS耳机按键信号");
+                                }
+                            });
+                        }
+                        return true;
+                    } else if (keyCode == KeyEvent.KEYCODE_MEDIA_PLAY) {
+                        onPlay();
+                        return true;
+                    } else if (keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE) {
+                        onPause();
+                        return true;
+                    } else if (keyCode == KeyEvent.KEYCODE_MEDIA_NEXT) {
+                        onSkipToNext();
+                        return true;
+                    } else if (keyCode == KeyEvent.KEYCODE_MEDIA_PREVIOUS) {
+                        onSkipToPrevious();
+                        return true;
                     }
                 }
                 return super.onMediaButtonEvent(mediaButtonEvent);
@@ -196,51 +277,128 @@ public class MainActivity extends AppCompatActivity {
         });
 
         mediaSession.setActive(true);
-        tvRemoteSignalBadge.setText("🟢 蓝牙耳机监听已就绪 (可按耳机键测试)");
+        tvRemoteSignalBadge.setText("🟢 蓝牙耳机按键与音量监听已激活");
         tvRemoteSignalBadge.setTextColor(Color.parseColor("#34D399"));
     }
 
+    private boolean isDebounced() {
+        long now = System.currentTimeMillis();
+        if (now - lastMediaKeyTime < 250) {
+            return true;
+        }
+        lastMediaKeyTime = now;
+        return false;
+    }
+
+    private void requestExclusiveAudioFocus() {
+        if (audioManager == null) return;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                    .setAudioAttributes(new AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build())
+                    .setAcceptsDelayedFocusGain(true)
+                    .setOnAudioFocusChangeListener(focusChange -> {
+                        if (focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT && isPrompterActive) {
+                            requestExclusiveAudioFocus();
+                        }
+                    })
+                    .build();
+            audioManager.requestAudioFocus(audioFocusRequest);
+        } else {
+            audioManager.requestAudioFocus(null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
+        }
+    }
+
+    private void updatePlaybackState(int state) {
+        if (mediaSession == null) return;
+        PlaybackStateCompat playbackState = new PlaybackStateCompat.Builder()
+                .setActions(PlaybackStateCompat.ACTION_PLAY
+                        | PlaybackStateCompat.ACTION_PAUSE
+                        | PlaybackStateCompat.ACTION_PLAY_PAUSE
+                        | PlaybackStateCompat.ACTION_SKIP_TO_NEXT
+                        | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS)
+                .setState(state, (long) currentScrollY, state == PlaybackStateCompat.STATE_PLAYING ? 1.0f : 0.0f)
+                .build();
+        mediaSession.setPlaybackState(playbackState);
+    }
+
     private void setupVolumeReceiver() {
-        AudioManager audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
         if (audioManager != null) {
+            int maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+            midVolume = Math.max(1, maxVol / 2);
             lastAudioVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC);
         }
 
         volumeReceiver = new VolumeChangeReceiver();
         IntentFilter filter = new IntentFilter();
         filter.addAction("android.media.VOLUME_CHANGED_ACTION");
-        registerReceiver(volumeReceiver, filter);
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(volumeReceiver, filter, Context.RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(volumeReceiver, filter);
+        }
     }
 
     private class VolumeChangeReceiver extends BroadcastReceiver {
         @Override
         public void onReceive(Context context, Intent intent) {
+            if (!isPrompterActive) return;
             if ("android.media.VOLUME_CHANGED_ACTION".equals(intent.getAction())) {
+                int streamType = intent.getIntExtra("android.media.EXTRA_VOLUME_STREAM_TYPE", -1);
+                if (streamType != -1 && streamType != AudioManager.STREAM_MUSIC) return;
+
                 int volume = intent.getIntExtra("android.media.EXTRA_VOLUME_STREAM_VALUE", -1);
-                if (lastAudioVolume != -1 && volume != -1 && volume != lastAudioVolume) {
-                    if (volume > lastAudioVolume) {
-                        adjustSpeed(+5, "蓝牙/侧键音量调大 ➔ 提词加速");
-                    } else {
-                        adjustSpeed(-5, "蓝牙/侧键音量调小 ➔ 提词减速");
-                    }
+                if (volume == -1 || volume == midVolume) return;
+
+                if (volume > midVolume) {
+                    adjustSpeed(+5, "耳机/音量上滑 ➔ 滚速加快一档");
+                } else {
+                    adjustSpeed(-5, "耳机/音量下滑 ➔ 滚速放慢一档");
                 }
-                lastAudioVolume = volume;
+
+                // 静默归位到中间音量，防止滑到最大/最小后无法继续调速
+                if (audioManager != null) {
+                    try {
+                        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, midVolume, 0);
+                    } catch (Exception ignored) {}
+                }
             }
         }
     }
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
-        if (isPrompterActive && event.getAction() == KeyEvent.ACTION_DOWN) {
-            int keyCode = event.getKeyCode();
+        int keyCode = event.getKeyCode();
+        if (isPrompterActive) {
             if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
-                adjustSpeed(+5, "音量加键 ➔ 提词加速");
+                if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                    adjustSpeed(+5, "音量加 ➔ 滚速加快一档");
+                }
                 return true;
             } else if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
-                adjustSpeed(-5, "音量减键 ➔ 提词减速");
+                if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                    adjustSpeed(-5, "音量减 ➔ 滚速放慢一档");
+                }
                 return true;
-            } else if (keyCode == KeyEvent.KEYCODE_SPACE || keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) {
-                togglePrompterPlayPause("空格/播放键");
+            } else if (keyCode == KeyEvent.KEYCODE_HEADSETHOOK
+                    || keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
+                    || keyCode == KeyEvent.KEYCODE_SPACE) {
+                if (event.getAction() == KeyEvent.ACTION_DOWN && !isDebounced()) {
+                    togglePrompterPlayPause("按键控制");
+                }
+                return true;
+            } else if (keyCode == KeyEvent.KEYCODE_MEDIA_PLAY) {
+                if (event.getAction() == KeyEvent.ACTION_DOWN && !isDebounced()) {
+                    startPrompter("耳机播放");
+                }
+                return true;
+            } else if (keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE) {
+                if (event.getAction() == KeyEvent.ACTION_DOWN && !isDebounced()) {
+                    pausePrompter("耳机暂停");
+                }
                 return true;
             }
         }
@@ -311,7 +469,13 @@ public class MainActivity extends AppCompatActivity {
             savePreferences();
         });
 
-        layoutPrompter.setOnClickListener(v -> wakeFloatingBar());
+        prompterScrollContainer.setOnTouchListener((v, event) -> {
+            if (event.getAction() == MotionEvent.ACTION_UP || event.getAction() == MotionEvent.ACTION_MOVE) {
+                currentScrollY = prompterScrollContainer.getScrollY();
+                wakeFloatingBar();
+            }
+            return false;
+        });
     }
 
     private void updateWordCount() {
@@ -323,6 +487,16 @@ public class MainActivity extends AppCompatActivity {
     private void openPrompter() {
         isPrompterActive = true;
         savePreferences();
+        requestExclusiveAudioFocus();
+        if (audioManager != null) {
+            try {
+                savedOriginalVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC);
+                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, midVolume, 0);
+            } catch (Exception ignored) {}
+        }
+        if (mediaSession != null) {
+            mediaSession.setActive(true);
+        }
 
         layoutEditor.setVisibility(View.GONE);
         layoutPrompter.setVisibility(View.VISIBLE);
@@ -339,7 +513,7 @@ public class MainActivity extends AppCompatActivity {
         viewFocusLine.setVisibility(showFocusLine ? View.VISIBLE : View.GONE);
 
         currentScrollY = 0f;
-        framePrompterContent.setTranslationY(0f);
+        prompterScrollContainer.post(() -> prompterScrollContainer.scrollTo(0, 0));
 
         wakeFloatingBar();
         startPrompter("开启提词");
@@ -348,6 +522,12 @@ public class MainActivity extends AppCompatActivity {
     private void exitPrompter() {
         pausePrompter("退出提词");
         isPrompterActive = false;
+        if (audioManager != null && savedOriginalVolume != -1) {
+            try {
+                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, savedOriginalVolume, 0);
+                savedOriginalVolume = -1;
+            } catch (Exception ignored) {}
+        }
 
         layoutPrompter.setVisibility(View.GONE);
         layoutEditor.setVisibility(View.VISIBLE);
@@ -366,6 +546,8 @@ public class MainActivity extends AppCompatActivity {
     private void startPrompter(String source) {
         if (isPlaying) return;
         isPlaying = true;
+        currentScrollY = prompterScrollContainer.getScrollY();
+        updatePlaybackState(PlaybackStateCompat.STATE_PLAYING);
         lastFrameTime = System.nanoTime();
         scrollHandler.post(scrollRunnable);
         btnPrompterPlayPause.setImageResource(android.R.drawable.ic_media_pause);
@@ -375,6 +557,7 @@ public class MainActivity extends AppCompatActivity {
     private void pausePrompter(String source) {
         if (!isPlaying) return;
         isPlaying = false;
+        updatePlaybackState(PlaybackStateCompat.STATE_PAUSED);
         scrollHandler.removeCallbacks(scrollRunnable);
         btnPrompterPlayPause.setImageResource(android.R.drawable.ic_media_play);
         showHud("⏸ 暂停滚动 (" + source + ")");
@@ -390,7 +573,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void restartPrompter() {
         currentScrollY = 0f;
-        framePrompterContent.setTranslationY(0f);
+        prompterScrollContainer.scrollTo(0, 0);
         showHud("⏮ 回到文稿开头");
     }
 
@@ -411,16 +594,17 @@ public class MainActivity extends AppCompatActivity {
             float deltaSeconds = (now - lastFrameTime) / 1_000_000_000.0f;
             lastFrameTime = now;
 
-            currentScrollY -= currentSpeed * deltaSeconds;
-            framePrompterContent.setTranslationY(currentScrollY);
+            currentScrollY += currentSpeed * deltaSeconds;
+            int targetY = Math.round(currentScrollY);
+            prompterScrollContainer.scrollTo(0, targetY);
 
-            int contentHeight = framePrompterContent.getHeight();
-            if (contentHeight > 0 && Math.abs(currentScrollY) > contentHeight) {
+            int maxScroll = Math.max(0, framePrompterContent.getHeight() - prompterScrollContainer.getHeight());
+            if (maxScroll > 0 && targetY >= maxScroll) {
                 pausePrompter("台词结束");
                 return;
             }
 
-            scrollHandler.post(this);
+            scrollHandler.postDelayed(this, 16);
         }
     };
 
@@ -448,6 +632,15 @@ public class MainActivity extends AppCompatActivity {
     };
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        requestExclusiveAudioFocus();
+        if (mediaSession != null) {
+            mediaSession.setActive(true);
+        }
+    }
+
+    @Override
     public void onBackPressed() {
         if (isPrompterActive) {
             exitPrompter();
@@ -459,11 +652,20 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        if (silentAudioTrack != null) {
+            try {
+                silentAudioTrack.stop();
+                silentAudioTrack.release();
+            } catch (Exception ignored) {}
+        }
         if (mediaSession != null) {
             mediaSession.release();
         }
         if (volumeReceiver != null) {
             unregisterReceiver(volumeReceiver);
+        }
+        if (audioManager != null && audioFocusRequest != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            audioManager.abandonAudioFocusRequest(audioFocusRequest);
         }
         scrollHandler.removeCallbacks(scrollRunnable);
     }
