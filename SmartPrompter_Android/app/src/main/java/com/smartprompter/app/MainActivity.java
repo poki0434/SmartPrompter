@@ -9,18 +9,16 @@ import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
-import android.media.AudioFormat;
 import android.media.AudioManager;
-import android.media.AudioTrack;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.support.v4.media.MediaMetadataCompat;
 import android.support.v4.media.session.MediaSessionCompat;
 import android.support.v4.media.session.PlaybackStateCompat;
 import android.text.Editable;
 import android.text.TextWatcher;
+import android.view.Choreographer;
 import android.view.GestureDetector;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
@@ -125,7 +123,6 @@ public class MainActivity extends AppCompatActivity {
     private boolean isPlaying = false;
     private boolean isPrompterActive = false;
 
-    private final Handler scrollHandler = new Handler(Looper.getMainLooper());
     private float currentScrollY = 0f;
     private long lastFrameTime = 0;
 
@@ -133,10 +130,10 @@ public class MainActivity extends AppCompatActivity {
     private MediaSessionCompat mediaSession;
     private AudioManager audioManager;
     private AudioFocusRequest audioFocusRequest;
-    private AudioTrack silentAudioTrack;
     private VolumeChangeReceiver volumeReceiver;
     private int midVolume = 7;
     private int savedOriginalVolume = -1;
+    private float savedOriginalBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE;
     private long lastMediaKeyTime = 0;
 
     private GestureDetector tapGestureDetector;
@@ -153,7 +150,6 @@ public class MainActivity extends AppCompatActivity {
 
         initViews();
         loadSavedPreferences();
-        startSilentAudioKeepAlive();
         setupMediaSessionAndAudioFocus();
         setupVolumeReceiver();
         setupEventListeners();
@@ -188,6 +184,7 @@ public class MainActivity extends AppCompatActivity {
         layoutFloatingBar = findViewById(R.id.layoutFloatingBar);
         btnPrompterPlayPause = findViewById(R.id.btnPrompterPlayPause);
         tvPrompterSpeedIndicator = findViewById(R.id.tvPrompterSpeedIndicator);
+        framePrompterContent.setLayerType(View.LAYER_TYPE_HARDWARE, null);
     }
 
     private void loadSavedPreferences() {
@@ -397,45 +394,6 @@ public class MainActivity extends AppCompatActivity {
     // 蓝牙耳机保活与 MediaSession 拦截 (OPPO / ColorOS 深度适配)
     // =========================================================================
 
-    private void startSilentAudioKeepAlive() {
-        try {
-            if (silentAudioTrack != null) {
-                if (silentAudioTrack.getPlayState() != AudioTrack.PLAYSTATE_PLAYING) {
-                    silentAudioTrack.play();
-                }
-                return;
-            }
-            int sampleRate = 8000;
-            int numSamples = 8000; // 1秒极微底噪 PCM (-90dB，人耳完全听不见，但能绕过 ColorOS 静音检测)
-            byte[] pcm = new byte[numSamples * 2];
-            for (int i = 0; i < numSamples; i++) {
-                short val = (short) ((i % 2 == 0) ? 1 : -1);
-                pcm[i * 2] = (byte) (val & 0xff);
-                pcm[i * 2 + 1] = (byte) ((val >> 8) & 0xff);
-            }
-
-            silentAudioTrack = new AudioTrack(
-                    new AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_MEDIA)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                            .build(),
-                    new AudioFormat.Builder()
-                            .setSampleRate(sampleRate)
-                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                            .build(),
-                    pcm.length,
-                    AudioTrack.MODE_STATIC,
-                    AudioManager.AUDIO_SESSION_ID_GENERATE
-            );
-            silentAudioTrack.write(pcm, 0, pcm.length);
-            silentAudioTrack.setLoopPoints(0, numSamples, -1);
-            silentAudioTrack.play();
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-    }
-
     private void setupMediaSessionAndAudioFocus() {
         audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
         requestExclusiveAudioFocus();
@@ -443,12 +401,6 @@ public class MainActivity extends AppCompatActivity {
         mediaSession = new MediaSessionCompat(this, "SmartPrompterMediaSession");
         mediaSession.setFlags(MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS
                 | MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS);
-
-        // 注入标准 MediaMetadata，确保 ColorOS 媒体中心识别本应用为有效播放器
-        mediaSession.setMetadata(new MediaMetadataCompat.Builder()
-                .putString(MediaMetadataCompat.METADATA_KEY_TITLE, "智能提词器")
-                .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, "耳机遥控模式")
-                .build());
 
         updatePlaybackState(PlaybackStateCompat.STATE_PLAYING);
 
@@ -538,7 +490,7 @@ public class MainActivity extends AppCompatActivity {
             audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
                     .setAudioAttributes(new AudioAttributes.Builder()
                             .setUsage(AudioAttributes.USAGE_MEDIA)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                             .build())
                     .setAcceptsDelayedFocusGain(true)
                     .setOnAudioFocusChangeListener(focusChange -> {
@@ -767,7 +719,6 @@ public class MainActivity extends AppCompatActivity {
         isPrompterActive = true;
         saveSettings();
 
-        startSilentAudioKeepAlive();
         requestExclusiveAudioFocus();
         if (audioManager != null) {
             try {
@@ -783,6 +734,12 @@ public class MainActivity extends AppCompatActivity {
         layoutEditor.setVisibility(View.GONE);
         layoutPrompter.setVisibility(View.VISIBLE);
 
+        // 自动将屏幕亮度调至最高 (100%)
+        WindowManager.LayoutParams lp = getWindow().getAttributes();
+        savedOriginalBrightness = lp.screenBrightness;
+        lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_FULL;
+        getWindow().setAttributes(lp);
+
         getWindow().getDecorView().setSystemUiVisibility(
                 View.SYSTEM_UI_FLAG_FULLSCREEN
                         | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
@@ -795,7 +752,8 @@ public class MainActivity extends AppCompatActivity {
         viewFocusLine.setVisibility(showFocusLine ? View.VISIBLE : View.GONE);
 
         currentScrollY = 0f;
-        prompterScrollContainer.post(() -> prompterScrollContainer.scrollTo(0, 0));
+        framePrompterContent.setTranslationY(0f);
+        prompterScrollContainer.scrollTo(0, 0);
 
         wakeFloatingBar();
         startPrompter("开启提词");
@@ -815,6 +773,11 @@ public class MainActivity extends AppCompatActivity {
         layoutPrompter.setVisibility(View.GONE);
         layoutEditor.setVisibility(View.VISIBLE);
 
+        // 恢复进入提词前的屏幕亮度设置
+        WindowManager.LayoutParams lp = getWindow().getAttributes();
+        lp.screenBrightness = savedOriginalBrightness;
+        getWindow().setAttributes(lp);
+
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
     }
 
@@ -831,11 +794,10 @@ public class MainActivity extends AppCompatActivity {
     private void startPrompter(String source) {
         if (isPlaying) return;
         isPlaying = true;
-        currentScrollY = prompterScrollContainer.getScrollY();
-        startSilentAudioKeepAlive();
         updatePlaybackState(PlaybackStateCompat.STATE_PLAYING);
-        lastFrameTime = System.nanoTime();
-        scrollHandler.post(scrollRunnable);
+        lastFrameTime = 0L;
+        Choreographer.getInstance().removeFrameCallback(frameCallback);
+        Choreographer.getInstance().postFrameCallback(frameCallback);
         btnPrompterPlayPause.setImageResource(android.R.drawable.ic_media_pause);
         showHud("▶ 开始滚动 (" + source + ")");
     }
@@ -844,7 +806,7 @@ public class MainActivity extends AppCompatActivity {
         if (!isPlaying) return;
         isPlaying = false;
         updatePlaybackState(PlaybackStateCompat.STATE_PLAYING);
-        scrollHandler.removeCallbacks(scrollRunnable);
+        Choreographer.getInstance().removeFrameCallback(frameCallback);
         btnPrompterPlayPause.setImageResource(android.R.drawable.ic_media_play);
         showHud("⏸ 暂停滚动 (" + source + ")");
     }
@@ -859,6 +821,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void restartPrompter() {
         currentScrollY = 0f;
+        framePrompterContent.setTranslationY(0f);
         prompterScrollContainer.scrollTo(0, 0);
         showHud("⏮ 回到文稿开头");
     }
@@ -872,25 +835,30 @@ public class MainActivity extends AppCompatActivity {
         saveSettings();
     }
 
-    private final Runnable scrollRunnable = new Runnable() {
+    private final Choreographer.FrameCallback frameCallback = new Choreographer.FrameCallback() {
         @Override
-        public void run() {
+        public void doFrame(long frameTimeNanos) {
             if (!isPlaying) return;
-            long now = System.nanoTime();
-            float deltaSeconds = (now - lastFrameTime) / 1_000_000_000.0f;
-            lastFrameTime = now;
+            if (lastFrameTime == 0) {
+                lastFrameTime = frameTimeNanos;
+            }
+            float deltaSeconds = (frameTimeNanos - lastFrameTime) / 1_000_000_000.0f;
+            lastFrameTime = frameTimeNanos;
 
-            currentScrollY += currentSpeed * deltaSeconds;
-            int targetY = Math.round(currentScrollY);
-            prompterScrollContainer.scrollTo(0, targetY);
+            // 防异常跳帧保护
+            if (deltaSeconds > 0f && deltaSeconds < 0.1f) {
+                currentScrollY += currentSpeed * deltaSeconds;
+                // 使用 GPU 亚像素浮点位移 (setTranslationY) 替代整数 scrollTo，彻底消除掉帧与抖动
+                framePrompterContent.setTranslationY(-currentScrollY);
+            }
 
             int maxScroll = Math.max(0, framePrompterContent.getHeight() - prompterScrollContainer.getHeight());
-            if (maxScroll > 0 && targetY >= maxScroll) {
+            if (maxScroll > 0 && currentScrollY >= maxScroll) {
                 pausePrompter("台词结束");
                 return;
             }
 
-            scrollHandler.postDelayed(this, 16);
+            Choreographer.getInstance().postFrameCallback(this);
         }
     };
 
@@ -920,7 +888,6 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
-        startSilentAudioKeepAlive();
         requestExclusiveAudioFocus();
         if (mediaSession != null) {
             mediaSession.setActive(true);
@@ -942,12 +909,6 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        if (silentAudioTrack != null) {
-            try {
-                silentAudioTrack.stop();
-                silentAudioTrack.release();
-            } catch (Exception ignored) {}
-        }
         if (mediaSession != null) {
             mediaSession.release();
         }
@@ -957,6 +918,6 @@ public class MainActivity extends AppCompatActivity {
         if (audioManager != null && audioFocusRequest != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             audioManager.abandonAudioFocusRequest(audioFocusRequest);
         }
-        scrollHandler.removeCallbacks(scrollRunnable);
+        Choreographer.getInstance().removeFrameCallback(frameCallback);
     }
 }
