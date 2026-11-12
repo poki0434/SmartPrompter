@@ -1,11 +1,14 @@
 package com.smartprompter.app;
 
+import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
 import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
 import android.media.AudioFormat;
@@ -15,8 +18,11 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.support.v4.media.MediaMetadataCompat;
 import android.support.v4.media.session.MediaSessionCompat;
 import android.support.v4.media.session.PlaybackStateCompat;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.view.GestureDetector;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
@@ -34,18 +40,25 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.media.session.MediaButtonReceiver;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
 
 /**
- * 智能提词器主界面 (v5)
- * 1. 点击屏幕：开始 / 暂停提词
- * 2. 上下滑动屏幕：调节滚动速度（上滑加速 +10 px/s，下滑减速 -10 px/s）
- * 3. TWS 耳机：单击暂停/继续（保持 STATE_PLAYING 防系统丢焦点），滑动耳机柄调音量同步调速（±10 px/s）
- * 4. 镜像与旋转：支持 正常 / 水平镜像 / 旋转180° / 水平镜像+旋转180°
+ * 智能提词器主界面 (v8 - 三级架构 + OPPO TWS 深度保活)
+ * 一级界面：草稿列表（文档1、文档2... 含标题与内容预览，支持新建与删除）
+ * 二级界面：编辑标题、提词内容与提词参数设置
+ * 三级界面：全屏提词（单击屏幕/耳机启停，上下滑屏/耳机调速 ±10 px/s，单一镜像水平+180°）
  */
 public class MainActivity extends AppCompatActivity {
 
     private static final String PREF_NAME = "SmartPrompterPrefs";
-    private static final String KEY_SCRIPT = "key_script";
+    private static final String KEY_DRAFTS_JSON = "key_drafts_json";
     private static final String KEY_SPEED = "key_speed";
     private static final String KEY_FONT_SIZE = "key_font_size";
     private static final String KEY_MIRROR = "key_mirror";
@@ -60,8 +73,29 @@ public class MainActivity extends AppCompatActivity {
             + "感觉语速跟不上？上下滑动屏幕或耳机音量键，每次加减 10 px/s 滚动速度！\n\n"
             + "祝你拍摄顺利，录制一遍过！";
 
+    private static class Draft {
+        String id;
+        String title;
+        String content;
+
+        Draft(String id, String title, String content) {
+            this.id = id;
+            this.title = title;
+            this.content = content;
+        }
+    }
+
+    // 三级视图容器
+    private LinearLayout layoutDraftList;
     private LinearLayout layoutEditor;
     private FrameLayout layoutPrompter;
+
+    // 一级：草稿列表控件
+    private LinearLayout draftListContainer;
+    private TextView tvDraftCount;
+
+    // 二级：编辑与参数控件
+    private EditText etDraftTitle;
     private EditText etScript;
     private TextView tvWordCount;
     private SeekBar seekSpeed;
@@ -70,16 +104,22 @@ public class MainActivity extends AppCompatActivity {
     private TextView tvFontSizeValue;
     private CheckBox cbMirror;
     private CheckBox cbFocusLine;
+    private TextView tvRemoteSignalBadge;
+
+    // 三级：提词控件
     private View viewFocusLine;
     private TextView tvPrompterText;
     private LinearLayout framePrompterContent;
     private ScrollView prompterScrollContainer;
-    private TextView tvRemoteSignalBadge;
     private TextView tvPrompterHud;
-
     private LinearLayout layoutFloatingBar;
     private ImageButton btnPrompterPlayPause;
     private TextView tvPrompterSpeedIndicator;
+
+    // 数据与状态
+    private final List<Draft> drafts = new ArrayList<>();
+    private int currentDraftIndex = -1;
+    private boolean isUpdatingEditorFields = false;
 
     private int currentSpeed = 45;
     private int currentFontSize = 48;
@@ -92,6 +132,7 @@ public class MainActivity extends AppCompatActivity {
     private float currentScrollY = 0f;
     private long lastFrameTime = 0;
 
+    // 蓝牙耳机 MediaSession 与极微底噪保活音轨
     private MediaSessionCompat mediaSession;
     private AudioManager audioManager;
     private AudioFocusRequest audioFocusRequest;
@@ -119,11 +160,29 @@ public class MainActivity extends AppCompatActivity {
         setupMediaSessionAndAudioFocus();
         setupVolumeReceiver();
         setupEventListeners();
+        renderDraftList();
+
+        // 处理可能通过 MediaButtonReceiver 启动的媒体按键 Intent
+        MediaButtonReceiver.handleIntent(mediaSession, getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        if (mediaSession != null) {
+            MediaButtonReceiver.handleIntent(mediaSession, intent);
+        }
     }
 
     private void initViews() {
+        layoutDraftList = findViewById(R.id.layoutDraftList);
         layoutEditor = findViewById(R.id.layoutEditor);
         layoutPrompter = findViewById(R.id.layoutPrompter);
+
+        draftListContainer = findViewById(R.id.draftListContainer);
+        tvDraftCount = findViewById(R.id.tvDraftCount);
+
+        etDraftTitle = findViewById(R.id.etDraftTitle);
         etScript = findViewById(R.id.etScript);
         tvWordCount = findViewById(R.id.tvWordCount);
         seekSpeed = findViewById(R.id.seekSpeed);
@@ -132,13 +191,13 @@ public class MainActivity extends AppCompatActivity {
         tvFontSizeValue = findViewById(R.id.tvFontSizeValue);
         cbMirror = findViewById(R.id.cbMirror);
         cbFocusLine = findViewById(R.id.cbFocusLine);
+        tvRemoteSignalBadge = findViewById(R.id.tvRemoteSignalBadge);
+
         viewFocusLine = findViewById(R.id.viewFocusLine);
         tvPrompterText = findViewById(R.id.tvPrompterText);
         framePrompterContent = findViewById(R.id.framePrompterContent);
         prompterScrollContainer = findViewById(R.id.prompterScrollContainer);
-        tvRemoteSignalBadge = findViewById(R.id.tvRemoteSignalBadge);
         tvPrompterHud = findViewById(R.id.tvPrompterHud);
-
         layoutFloatingBar = findViewById(R.id.layoutFloatingBar);
         btnPrompterPlayPause = findViewById(R.id.btnPrompterPlayPause);
         tvPrompterSpeedIndicator = findViewById(R.id.tvPrompterSpeedIndicator);
@@ -146,13 +205,11 @@ public class MainActivity extends AppCompatActivity {
 
     private void loadSavedPreferences() {
         SharedPreferences sp = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
-        String savedText = sp.getString(KEY_SCRIPT, DEFAULT_SAMPLE);
         currentSpeed = sp.getInt(KEY_SPEED, 45);
         currentFontSize = sp.getInt(KEY_FONT_SIZE, 48);
         isMirror = sp.getBoolean(KEY_MIRROR, false);
         showFocusLine = sp.getBoolean(KEY_FOCUS_LINE, true);
 
-        etScript.setText(savedText);
         seekSpeed.setProgress(currentSpeed);
         tvSpeedValue.setText(currentSpeed + " px/s");
         tvPrompterSpeedIndicator.setText(currentSpeed + " px");
@@ -163,40 +220,228 @@ public class MainActivity extends AppCompatActivity {
         cbMirror.setChecked(isMirror);
         cbFocusLine.setChecked(showFocusLine);
 
-        updateWordCount();
+        drafts.clear();
+        String json = sp.getString(KEY_DRAFTS_JSON, "");
+        if (!json.isEmpty()) {
+            try {
+                JSONArray arr = new JSONArray(json);
+                for (int i = 0; i < arr.length(); i++) {
+                    JSONObject obj = arr.getJSONObject(i);
+                    drafts.add(new Draft(
+                            obj.optString("id", UUID.randomUUID().toString()),
+                            obj.optString("title", "文档" + (i + 1)),
+                            obj.optString("content", "")
+                    ));
+                }
+            } catch (Exception ignored) {}
+        }
+
+        if (drafts.isEmpty()) {
+            drafts.add(new Draft(UUID.randomUUID().toString(), "文档1（示例）", DEFAULT_SAMPLE));
+            saveDrafts();
+        }
     }
 
-    private void savePreferences() {
-        SharedPreferences.Editor editor = getSharedPreferences(PREF_NAME, MODE_PRIVATE).edit();
-        editor.putString(KEY_SCRIPT, etScript.getText().toString());
-        editor.putInt(KEY_SPEED, currentSpeed);
-        editor.putInt(KEY_FONT_SIZE, currentFontSize);
-        editor.putBoolean(KEY_MIRROR, isMirror);
-        editor.putBoolean(KEY_FOCUS_LINE, showFocusLine);
-        editor.apply();
+    private void saveDrafts() {
+        try {
+            JSONArray arr = new JSONArray();
+            for (Draft d : drafts) {
+                JSONObject obj = new JSONObject();
+                obj.put("id", d.id);
+                obj.put("title", d.title);
+                obj.put("content", d.content);
+                arr.put(obj);
+            }
+            getSharedPreferences(PREF_NAME, MODE_PRIVATE)
+                    .edit()
+                    .putString(KEY_DRAFTS_JSON, arr.toString())
+                    .apply();
+        } catch (Exception ignored) {}
     }
+
+    private void saveSettings() {
+        getSharedPreferences(PREF_NAME, MODE_PRIVATE).edit()
+                .putInt(KEY_SPEED, currentSpeed)
+                .putInt(KEY_FONT_SIZE, currentFontSize)
+                .putBoolean(KEY_MIRROR, isMirror)
+                .putBoolean(KEY_FOCUS_LINE, showFocusLine)
+                .apply();
+    }
+
+    // =========================================================================
+    // 一级界面：草稿列表渲染与交互
+    // =========================================================================
+
+    private void renderDraftList() {
+        draftListContainer.removeAllViews();
+        tvDraftCount.setText("共 " + drafts.size() + " 篇提词文稿");
+
+        float density = getResources().getDisplayMetrics().density;
+        int pad = (int) (14 * density);
+        int marginBottom = (int) (12 * density);
+
+        for (int i = 0; i < drafts.size(); i++) {
+            final int index = i;
+            Draft draft = drafts.get(i);
+
+            LinearLayout card = new LinearLayout(this);
+            card.setOrientation(LinearLayout.VERTICAL);
+            card.setPadding(pad, pad, pad, pad);
+
+            GradientDrawable bg = new GradientDrawable();
+            bg.setColor(Color.parseColor("#1E293B"));
+            bg.setCornerRadius(12 * density);
+            bg.setStroke((int) (1 * density), Color.parseColor("#334155"));
+            card.setBackground(bg);
+
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+            );
+            lp.bottomMargin = marginBottom;
+            card.setLayoutParams(lp);
+
+            // 标题行 + 删除按钮
+            LinearLayout topRow = new LinearLayout(this);
+            topRow.setOrientation(LinearLayout.HORIZONTAL);
+            topRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
+
+            TextView tvTitle = new TextView(this);
+            tvTitle.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+            tvTitle.setText(draft.title.isEmpty() ? "未命名草稿" : draft.title);
+            tvTitle.setTextColor(Color.WHITE);
+            tvTitle.setTextSize(16f);
+            tvTitle.setTypeface(null, android.graphics.Typeface.BOLD);
+
+            Button btnDelete = new Button(this, null, android.R.attr.borderlessButtonStyle);
+            btnDelete.setText("删除");
+            btnDelete.setTextColor(Color.parseColor("#F43F5E"));
+            btnDelete.setTextSize(12f);
+            btnDelete.setMinimumWidth(0);
+            btnDelete.setMinWidth(0);
+            btnDelete.setOnClickListener(v -> {
+                drafts.remove(index);
+                saveDrafts();
+                renderDraftList();
+                Toast.makeText(this, "已删除草稿", Toast.LENGTH_SHORT).show();
+            });
+
+            topRow.addView(tvTitle);
+            topRow.addView(btnDelete);
+
+            // 内容预览
+            TextView tvPreview = new TextView(this);
+            String cleanContent = draft.content.replace("\n", " ").trim();
+            tvPreview.setText(cleanContent.isEmpty() ? "（暂无内容，点击编辑）" : cleanContent);
+            tvPreview.setTextColor(Color.parseColor("#94A3B8"));
+            tvPreview.setTextSize(13f);
+            tvPreview.setMaxLines(2);
+            tvPreview.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            LinearLayout.LayoutParams prevLp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+            );
+            prevLp.topMargin = (int) (6 * density);
+            tvPreview.setLayoutParams(prevLp);
+
+            // 字数统计
+            int len = draft.content.trim().length();
+            int sec = Math.round((len / 240.0f) * 60);
+            TextView tvMeta = new TextView(this);
+            tvMeta.setText(len + " 字 · 约 " + sec + " 秒");
+            tvMeta.setTextColor(Color.parseColor("#818CF8"));
+            tvMeta.setTextSize(11f);
+            LinearLayout.LayoutParams metaLp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+            );
+            metaLp.topMargin = (int) (8 * density);
+            tvMeta.setLayoutParams(metaLp);
+
+            card.addView(topRow);
+            card.addView(tvPreview);
+            card.addView(tvMeta);
+
+            card.setOnClickListener(v -> openDraftInEditor(index));
+            draftListContainer.addView(card);
+        }
+    }
+
+    private void createNewDraft() {
+        String title = "文档" + (drafts.size() + 1);
+        drafts.add(0, new Draft(UUID.randomUUID().toString(), title, ""));
+        saveDrafts();
+        openDraftInEditor(0);
+    }
+
+    private void openDraftInEditor(int index) {
+        currentDraftIndex = index;
+        Draft d = drafts.get(index);
+
+        isUpdatingEditorFields = true;
+        etDraftTitle.setText(d.title);
+        etScript.setText(d.content);
+        isUpdatingEditorFields = false;
+
+        updateWordCount();
+
+        layoutDraftList.setVisibility(View.GONE);
+        layoutEditor.setVisibility(View.VISIBLE);
+    }
+
+    private void backToDraftList() {
+        saveCurrentDraftFromEditor();
+        renderDraftList();
+        layoutEditor.setVisibility(View.GONE);
+        layoutDraftList.setVisibility(View.VISIBLE);
+    }
+
+    private void saveCurrentDraftFromEditor() {
+        if (currentDraftIndex >= 0 && currentDraftIndex < drafts.size()) {
+            Draft d = drafts.get(currentDraftIndex);
+            d.title = etDraftTitle.getText().toString().trim();
+            if (d.title.isEmpty()) d.title = "未命名草稿";
+            d.content = etScript.getText().toString();
+            saveDrafts();
+        }
+    }
+
+    // =========================================================================
+    // 蓝牙耳机保活与 MediaSession 拦截 (OPPO / ColorOS 深度适配)
+    // =========================================================================
 
     private void startSilentAudioKeepAlive() {
         try {
+            if (silentAudioTrack != null) {
+                if (silentAudioTrack.getPlayState() != AudioTrack.PLAYSTATE_PLAYING) {
+                    silentAudioTrack.play();
+                }
+                return;
+            }
             int sampleRate = 8000;
-            int numSamples = 8000;
-            byte[] silence = new byte[numSamples * 2];
+            int numSamples = 8000; // 1秒极微底噪 PCM (-90dB，人耳完全听不见，但能绕过 ColorOS 静音检测)
+            byte[] pcm = new byte[numSamples * 2];
+            for (int i = 0; i < numSamples; i++) {
+                short val = (short) ((i % 2 == 0) ? 1 : -1);
+                pcm[i * 2] = (byte) (val & 0xff);
+                pcm[i * 2 + 1] = (byte) ((val >> 8) & 0xff);
+            }
 
             silentAudioTrack = new AudioTrack(
                     new AudioAttributes.Builder()
                             .setUsage(AudioAttributes.USAGE_MEDIA)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                             .build(),
                     new AudioFormat.Builder()
                             .setSampleRate(sampleRate)
                             .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                             .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                             .build(),
-                    silence.length,
+                    pcm.length,
                     AudioTrack.MODE_STATIC,
                     AudioManager.AUDIO_SESSION_ID_GENERATE
             );
-            silentAudioTrack.write(silence, 0, silence.length);
+            silentAudioTrack.write(pcm, 0, pcm.length);
             silentAudioTrack.setLoopPoints(0, numSamples, -1);
             silentAudioTrack.play();
         } catch (Exception e) {
@@ -208,9 +453,24 @@ public class MainActivity extends AppCompatActivity {
         audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
         requestExclusiveAudioFocus();
 
-        mediaSession = new MediaSessionCompat(this, "SmartPrompterMediaSession");
+        ComponentName mediaButtonReceiver = new ComponentName(this, MediaButtonReceiver.class);
+        mediaSession = new MediaSessionCompat(this, "SmartPrompterMediaSession", mediaButtonReceiver, null);
         mediaSession.setFlags(MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS
                 | MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS);
+
+        Intent mediaButtonIntent = new Intent(Intent.ACTION_MEDIA_BUTTON);
+        mediaButtonIntent.setClass(this, MediaButtonReceiver.class);
+        int flags = Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+                ? PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT
+                : PendingIntent.FLAG_UPDATE_CURRENT;
+        PendingIntent mbrIntent = PendingIntent.getBroadcast(this, 0, mediaButtonIntent, flags);
+        mediaSession.setMediaButtonReceiver(mbrIntent);
+
+        // 注入标准 MediaMetadata，确保 ColorOS 媒体中心识别本应用为有效播放器
+        mediaSession.setMetadata(new MediaMetadataCompat.Builder()
+                .putString(MediaMetadataCompat.METADATA_KEY_TITLE, "智能提词器")
+                .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, "耳机遥控模式")
+                .build());
 
         updatePlaybackState(PlaybackStateCompat.STATE_PLAYING);
 
@@ -254,7 +514,10 @@ public class MainActivity extends AppCompatActivity {
                 KeyEvent event = mediaButtonEvent.getParcelableExtra(Intent.EXTRA_KEY_EVENT);
                 if (event != null && event.getAction() == KeyEvent.ACTION_DOWN) {
                     int keyCode = event.getKeyCode();
-                    if (keyCode == KeyEvent.KEYCODE_HEADSETHOOK || keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) {
+                    if (keyCode == KeyEvent.KEYCODE_HEADSETHOOK
+                            || keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
+                            || keyCode == KeyEvent.KEYCODE_MEDIA_PLAY
+                            || keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE) {
                         if (!isDebounced()) {
                             runOnUiThread(() -> {
                                 if (isPrompterActive) {
@@ -264,12 +527,6 @@ public class MainActivity extends AppCompatActivity {
                                 }
                             });
                         }
-                        return true;
-                    } else if (keyCode == KeyEvent.KEYCODE_MEDIA_PLAY) {
-                        onPlay();
-                        return true;
-                    } else if (keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE) {
-                        onPause();
                         return true;
                     } else if (keyCode == KeyEvent.KEYCODE_MEDIA_NEXT) {
                         onSkipToNext();
@@ -303,11 +560,12 @@ public class MainActivity extends AppCompatActivity {
             audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
                     .setAudioAttributes(new AudioAttributes.Builder()
                             .setUsage(AudioAttributes.USAGE_MEDIA)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                             .build())
                     .setAcceptsDelayedFocusGain(true)
                     .setOnAudioFocusChangeListener(focusChange -> {
-                        if (focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT && isPrompterActive) {
+                        if ((focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT || focusChange == AudioManager.AUDIOFOCUS_LOSS)
+                                && isPrompterActive) {
                             requestExclusiveAudioFocus();
                         }
                     })
@@ -326,7 +584,7 @@ public class MainActivity extends AppCompatActivity {
                         | PlaybackStateCompat.ACTION_PLAY_PAUSE
                         | PlaybackStateCompat.ACTION_SKIP_TO_NEXT
                         | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS)
-                .setState(state, (long) currentScrollY, state == PlaybackStateCompat.STATE_PLAYING ? 1.0f : 0.0f)
+                .setState(state, (long) currentScrollY, 1.0f)
                 .build();
         mediaSession.setPlaybackState(playbackState);
     }
@@ -390,14 +648,11 @@ public class MainActivity extends AppCompatActivity {
                 return true;
             } else if (keyCode == KeyEvent.KEYCODE_HEADSETHOOK
                     || keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
+                    || keyCode == KeyEvent.KEYCODE_MEDIA_PLAY
+                    || keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE
                     || keyCode == KeyEvent.KEYCODE_SPACE) {
                 if (event.getAction() == KeyEvent.ACTION_DOWN && !isDebounced()) {
-                    togglePrompterPlayPause("按键控制");
-                }
-                return true;
-            } else if (keyCode == KeyEvent.KEYCODE_MEDIA_PLAY || keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE) {
-                if (event.getAction() == KeyEvent.ACTION_DOWN && !isDebounced()) {
-                    togglePrompterPlayPause("TWS耳机");
+                    togglePrompterPlayPause("TWS耳机/按键");
                 }
                 return true;
             }
@@ -406,14 +661,21 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void setupEventListeners() {
-        etScript.addTextChangedListener(new android.text.TextWatcher() {
+        findViewById(R.id.btnNewDraft).setOnClickListener(v -> createNewDraft());
+        findViewById(R.id.btnBackToDrafts).setOnClickListener(v -> backToDraftList());
+
+        TextWatcher draftWatcher = new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
             @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
-                updateWordCount();
-                savePreferences();
+                if (!isUpdatingEditorFields) {
+                    updateWordCount();
+                    saveCurrentDraftFromEditor();
+                }
             }
-            @Override public void afterTextChanged(android.text.Editable s) {}
-        });
+            @Override public void afterTextChanged(Editable s) {}
+        };
+        etDraftTitle.addTextChangedListener(draftWatcher);
+        etScript.addTextChangedListener(draftWatcher);
 
         findViewById(R.id.btnLoadSample).setOnClickListener(v -> {
             etScript.setText(DEFAULT_SAMPLE);
@@ -430,7 +692,7 @@ public class MainActivity extends AppCompatActivity {
                 currentSpeed = Math.max(10, progress);
                 tvSpeedValue.setText(currentSpeed + " px/s");
                 tvPrompterSpeedIndicator.setText(currentSpeed + " px");
-                savePreferences();
+                saveSettings();
             }
             @Override public void onStartTrackingTouch(SeekBar seekBar) {}
             @Override public void onStopTrackingTouch(SeekBar seekBar) {}
@@ -440,7 +702,7 @@ public class MainActivity extends AppCompatActivity {
             @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
                 currentFontSize = Math.max(24, progress);
                 tvFontSizeValue.setText(currentFontSize + " sp");
-                savePreferences();
+                saveSettings();
             }
             @Override public void onStartTrackingTouch(SeekBar seekBar) {}
             @Override public void onStopTrackingTouch(SeekBar seekBar) {}
@@ -448,12 +710,12 @@ public class MainActivity extends AppCompatActivity {
 
         cbMirror.setOnCheckedChangeListener((btn, isChecked) -> {
             isMirror = isChecked;
-            savePreferences();
+            saveSettings();
         });
 
         cbFocusLine.setOnCheckedChangeListener((btn, isChecked) -> {
             showFocusLine = isChecked;
-            savePreferences();
+            saveSettings();
         });
 
         findViewById(R.id.btnLaunchPrompter).setOnClickListener(v -> openPrompter());
@@ -462,9 +724,15 @@ public class MainActivity extends AppCompatActivity {
         btnPrompterPlayPause.setOnClickListener(v -> togglePrompterPlayPause("屏幕按钮"));
         findViewById(R.id.btnPrompterSpeedMinus).setOnClickListener(v -> adjustSpeed(-SPEED_STEP, "手动减速"));
         findViewById(R.id.btnPrompterSpeedPlus).setOnClickListener(v -> adjustSpeed(SPEED_STEP, "手动加速"));
-        findViewById(R.id.btnPrompterMirror).setOnClickListener(v -> cycleMirrorMode(true));
+        findViewById(R.id.btnPrompterMirror).setOnClickListener(v -> {
+            isMirror = !isMirror;
+            cbMirror.setChecked(isMirror);
+            applyMirror();
+            saveSettings();
+            showHud("🪞 镜像(水平+180°): " + (isMirror ? "开" : "关"));
+            wakeFloatingBar();
+        });
 
-        // 提词器屏幕手势：单击 = 播放/暂停；上下滑动 = 调节滚动速度 (±10 px/s)
         tapGestureDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
             @Override
             public boolean onSingleTapConfirmed(MotionEvent e) {
@@ -485,7 +753,7 @@ public class MainActivity extends AppCompatActivity {
                     isSwipeAdjustingSpeed = false;
                     break;
                 case MotionEvent.ACTION_MOVE:
-                    float dy = swipeAnchorY - event.getRawY(); // 向上滑 dy > 0，向下滑 dy < 0
+                    float dy = swipeAnchorY - event.getRawY();
                     if (Math.abs(dy) >= 85f) {
                         isSwipeAdjustingSpeed = true;
                         if (dy > 0) {
@@ -502,24 +770,12 @@ public class MainActivity extends AppCompatActivity {
                     wakeFloatingBar();
                     if (isSwipeAdjustingSpeed) {
                         isSwipeAdjustingSpeed = false;
-                        return true; // 消费滑动调速手势，不触发 ScrollView 跳动
+                        return true;
                     }
                     break;
             }
-            // 返回 true 拦截 ScrollView 默认拖拽，专注“点击启停 + 上下滑动调速”
             return true;
         });
-    }
-
-    private void cycleMirrorMode(boolean inPrompter) {
-        isMirror = !isMirror;
-        cbMirror.setChecked(isMirror);
-        applyMirror();
-        savePreferences();
-        if (inPrompter) {
-            showHud("🪞 镜像(水平+180°): " + (isMirror ? "开" : "关"));
-            wakeFloatingBar();
-        }
     }
 
     private void updateWordCount() {
@@ -529,8 +785,11 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void openPrompter() {
+        saveCurrentDraftFromEditor();
         isPrompterActive = true;
-        savePreferences();
+        saveSettings();
+
+        startSilentAudioKeepAlive();
         requestExclusiveAudioFocus();
         if (audioManager != null) {
             try {
@@ -540,6 +799,7 @@ public class MainActivity extends AppCompatActivity {
         }
         if (mediaSession != null) {
             mediaSession.setActive(true);
+            updatePlaybackState(PlaybackStateCompat.STATE_PLAYING);
         }
 
         layoutEditor.setVisibility(View.GONE);
@@ -566,7 +826,6 @@ public class MainActivity extends AppCompatActivity {
     private void exitPrompter() {
         pausePrompter("退出提词");
         isPrompterActive = false;
-        updatePlaybackState(PlaybackStateCompat.STATE_PAUSED);
 
         if (audioManager != null && savedOriginalVolume != -1) {
             try {
@@ -581,13 +840,6 @@ public class MainActivity extends AppCompatActivity {
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
     }
 
-    /**
-     * 应用镜像与旋转模式到全屏 ScrollView 容器：
-     * 0: 正常显示
-     * 1: 水平镜像 (scaleX = -1)
-     * 2: 旋转 180° (rotation = 180)
-     * 3: 水平镜像 + 旋转 180° (scaleX = -1, rotation = 180)
-     */
     private void applyMirror() {
         if (isMirror) {
             prompterScrollContainer.setScaleX(-1.0f);
@@ -602,6 +854,7 @@ public class MainActivity extends AppCompatActivity {
         if (isPlaying) return;
         isPlaying = true;
         currentScrollY = prompterScrollContainer.getScrollY();
+        startSilentAudioKeepAlive();
         updatePlaybackState(PlaybackStateCompat.STATE_PLAYING);
         lastFrameTime = System.nanoTime();
         scrollHandler.post(scrollRunnable);
@@ -612,8 +865,7 @@ public class MainActivity extends AppCompatActivity {
     private void pausePrompter(String source) {
         if (!isPlaying) return;
         isPlaying = false;
-        // 保持 STATE_PLAYING，防止 ColorOS 在暂停后把下一次耳机点击路由给其他音乐软件
-        updatePlaybackState(isPrompterActive ? PlaybackStateCompat.STATE_PLAYING : PlaybackStateCompat.STATE_PAUSED);
+        updatePlaybackState(PlaybackStateCompat.STATE_PLAYING);
         scrollHandler.removeCallbacks(scrollRunnable);
         btnPrompterPlayPause.setImageResource(android.R.drawable.ic_media_play);
         showHud("⏸ 暂停滚动 (" + source + ")");
@@ -639,7 +891,7 @@ public class MainActivity extends AppCompatActivity {
         tvSpeedValue.setText(currentSpeed + " px/s");
         tvPrompterSpeedIndicator.setText(currentSpeed + " px");
         showHud("⚡ 速度: " + currentSpeed + " px/s (" + trigger + ")");
-        savePreferences();
+        saveSettings();
     }
 
     private final Runnable scrollRunnable = new Runnable() {
@@ -690,9 +942,11 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        startSilentAudioKeepAlive();
         requestExclusiveAudioFocus();
         if (mediaSession != null) {
             mediaSession.setActive(true);
+            updatePlaybackState(PlaybackStateCompat.STATE_PLAYING);
         }
     }
 
@@ -700,6 +954,8 @@ public class MainActivity extends AppCompatActivity {
     public void onBackPressed() {
         if (isPrompterActive) {
             exitPrompter();
+        } else if (layoutEditor.getVisibility() == View.VISIBLE) {
+            backToDraftList();
         } else {
             super.onBackPressed();
         }

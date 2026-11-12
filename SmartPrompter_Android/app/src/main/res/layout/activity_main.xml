@@ -4,8 +4,9 @@
     android:layout_height="match_parent"
     android:background="#0F172A">
 
+    <!-- 1. 一级界面：草稿列表 (layoutDraftList) -->
     <LinearLayout
-        android:id="@+id/layoutEditor"
+        android:id="@+id/layoutDraftList"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:orientation="vertical"
@@ -18,47 +19,127 @@
             android:gravity="center_vertical"
             android:paddingBottom="12dp">
 
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="智能提词器 · 我的草稿"
+                    android:textColor="#FFFFFF"
+                    android:textSize="20sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tvDraftCount"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="共 1 篇提词文稿"
+                    android:textColor="#94A3B8"
+                    android:textSize="12sp"
+                    android:layout_marginTop="2dp" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/btnNewDraft"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:text="+ 新建草稿"
+                android:textColor="#FFFFFF"
+                android:backgroundTint="#4F46E5" />
+        </LinearLayout>
+
+        <ScrollView
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:scrollbars="none">
+
+            <LinearLayout
+                android:id="@+id/draftListContainer"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical" />
+        </ScrollView>
+    </LinearLayout>
+
+    <!-- 2. 二级界面：编辑与参数设置 (layoutEditor) -->
+    <LinearLayout
+        android:id="@+id/layoutEditor"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:padding="16dp"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingBottom="10dp">
+
+            <Button
+                android:id="@+id/btnBackToDrafts"
+                style="?android:attr/borderlessButtonStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="38dp"
+                android:text="← 草稿"
+                android:textColor="#CBD5E1"
+                android:textSize="14sp" />
+
             <TextView
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="智能提词器 · 蓝牙遥控版"
+                android:text="编辑提词文稿"
+                android:gravity="center"
                 android:textColor="#FFFFFF"
-                android:textSize="18sp"
+                android:textSize="16sp"
                 android:textStyle="bold" />
 
             <Button
                 android:id="@+id/btnLaunchPrompter"
                 android:layout_width="wrap_content"
-                android:layout_height="40dp"
+                android:layout_height="38dp"
                 android:text="开启提词 ▶"
                 android:textColor="#FFFFFF"
                 android:backgroundTint="#4F46E5" />
         </LinearLayout>
 
+        <!-- 草稿标题输入 -->
+        <EditText
+            android:id="@+id/etDraftTitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="#1E293B"
+            android:padding="12dp"
+            android:layout_marginBottom="10dp"
+            android:hint="输入草稿标题（如：文档1）..."
+            android:singleLine="true"
+            android:textColor="#FFFFFF"
+            android:textColorHint="#64748B"
+            android:textSize="16sp"
+            android:textStyle="bold" />
+
+        <!-- 蓝牙状态卡片 -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
             android:background="#1E293B"
-            android:padding="12dp"
-            android:layout_marginBottom="12dp">
+            android:padding="10dp"
+            android:layout_marginBottom="10dp">
 
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="🎧 蓝牙耳机按键与音量调速功能"
-                android:textColor="#818CF8"
-                android:textStyle="bold"
-                android:textSize="13sp" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="• 耳机按键(单击/双击/捏一下)：开始 / 暂停提词\n• 耳机/手机音量键：调大=加速，调小=减速"
-                android:textColor="#CBD5E1"
-                android:textSize="12sp"
-                android:layout_marginTop="4dp" />
+                android:text="🎧 耳机/手势：单击耳机或轻点屏幕=启停 · 滑动屏幕/耳机=调速(±10)"
+                android:textColor="#94A3B8"
+                android:textSize="11sp" />
 
             <TextView
                 android:id="@+id/tvRemoteSignalBadge"
@@ -67,9 +148,10 @@
                 android:text="🟢 蓝牙耳机监听已就绪"
                 android:textColor="#34D399"
                 android:textSize="11sp"
-                android:layout_marginTop="6dp" />
+                android:layout_marginTop="4dp" />
         </LinearLayout>
 
+        <!-- 台词内容输入 -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="0dp"
@@ -119,7 +201,7 @@
                 android:layout_height="match_parent"
                 android:background="@null"
                 android:gravity="top|start"
-                android:hint="在此输入或粘贴剧本内容..."
+                android:hint="在此输入或粘贴提词内容..."
                 android:textColor="#F8FAFC"
                 android:textColorHint="#64748B"
                 android:textSize="15sp"
@@ -127,11 +209,12 @@
                 android:scrollbars="vertical" />
         </LinearLayout>
 
+        <!-- 底部参数滑块 -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:paddingTop="12dp">
+            android:paddingTop="10dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -169,7 +252,7 @@
                 android:layout_height="wrap_content"
                 android:gravity="center_vertical"
                 android:orientation="horizontal"
-                android:layout_marginTop="6dp">
+                android:layout_marginTop="4dp">
 
                 <TextView
                     android:layout_width="80dp"
@@ -200,7 +283,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="horizontal"
-                android:layout_marginTop="4dp">
+                android:layout_marginTop="2dp">
 
                 <CheckBox
                     android:id="@+id/cbMirror"
@@ -223,6 +306,7 @@
         </LinearLayout>
     </LinearLayout>
 
+    <!-- 3. 三级界面：全屏提词器播放视图 (layoutPrompter) -->
     <FrameLayout
         android:id="@+id/layoutPrompter"
         android:layout_width="match_parent"
