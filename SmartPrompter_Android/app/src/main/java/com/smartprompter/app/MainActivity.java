@@ -8,14 +8,9 @@ import android.content.pm.ActivityInfo;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
-import android.app.NotificationChannel;
-import android.app.NotificationManager;
 import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
-import android.media.MediaPlayer;
-import androidx.core.app.NotificationCompat;
-import androidx.media.app.NotificationCompat.MediaStyle;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -135,7 +130,6 @@ public class MainActivity extends AppCompatActivity {
 
     // 蓝牙耳机 MediaSession 与极微底噪保活音轨
     private MediaSessionCompat mediaSession;
-    private MediaPlayer silentMediaPlayer;
     private AudioManager audioManager;
     private AudioFocusRequest audioFocusRequest;
     private VolumeChangeReceiver volumeReceiver;
@@ -162,7 +156,6 @@ public class MainActivity extends AppCompatActivity {
         setupVolumeReceiver();
         setupEventListeners();
         renderDraftList();
-
     }
 
     private void initViews() {
@@ -402,55 +395,15 @@ public class MainActivity extends AppCompatActivity {
     // 蓝牙耳机保活与 MediaSession 拦截 (OPPO / ColorOS 深度适配)
     // =========================================================================
 
-    private void startSilentMediaPlayer() {
-        try {
-            if (silentMediaPlayer == null) {
-                silentMediaPlayer = MediaPlayer.create(this, R.raw.keepalive);
-                if (silentMediaPlayer != null) {
-                    silentMediaPlayer.setLooping(true);
-                    silentMediaPlayer.setVolume(0.01f, 0.01f);
-                }
-            }
-            if (silentMediaPlayer != null && !silentMediaPlayer.isPlaying()) {
-                silentMediaPlayer.start();
-            }
-        } catch (Exception ignored) {}
-    }
-
-    private void showMediaNotification() {
-        try {
-            String channelId = "prompter_media_channel";
-            NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-            if (nm == null || mediaSession == null) return;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                NotificationChannel channel = new NotificationChannel(
-                        channelId, "提词器耳机遥控", NotificationManager.IMPORTANCE_LOW);
-                channel.setSound(null, null);
-                nm.createNotificationChannel(channel);
-            }
-            NotificationCompat.Builder builder = new NotificationCompat.Builder(this, channelId)
-                    .setSmallIcon(android.R.drawable.ic_media_play)
-                    .setContentTitle("智能提词器")
-                    .setContentText("蓝牙耳机遥控已激活")
-                    .setOngoing(true)
-                    .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-                    .setStyle(new MediaStyle().setMediaSession(mediaSession.getSessionToken()));
-            nm.notify(1001, builder.build());
-        } catch (Exception ignored) {}
-    }
-
     private void setupMediaSessionAndAudioFocus() {
         audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
         requestExclusiveAudioFocus();
-        startSilentMediaPlayer();
-        showMediaNotification();
-        startSilentMediaPlayer();
 
         mediaSession = new MediaSessionCompat(this, "PrompterMediaSession");
         mediaSession.setFlags(MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS
                 | MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS);
 
-        updatePlaybackState(PlaybackStateCompat.STATE_PLAYING);
+        updatePlaybackState(PlaybackStateCompat.STATE_PAUSED);
 
         mediaSession.setCallback(new MediaSessionCompat.Callback() {
             @Override
@@ -529,7 +482,6 @@ public class MainActivity extends AppCompatActivity {
         });
 
         mediaSession.setActive(true);
-        showMediaNotification();
         tvRemoteSignalBadge.setText("🟢 蓝牙耳机按键与音量监听已激活");
         tvRemoteSignalBadge.setTextColor(Color.parseColor("#34D399"));
     }
@@ -571,10 +523,9 @@ public class MainActivity extends AppCompatActivity {
                 .setActions(PlaybackStateCompat.ACTION_PLAY
                         | PlaybackStateCompat.ACTION_PAUSE
                         | PlaybackStateCompat.ACTION_PLAY_PAUSE
-                        | PlaybackStateCompat.ACTION_STOP
                         | PlaybackStateCompat.ACTION_SKIP_TO_NEXT
                         | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS)
-                .setState(PlaybackStateCompat.STATE_PLAYING, 0, 1.0f)
+                .setState(state, 0, 1.0f)
                 .build();
         mediaSession.setPlaybackState(playbackState);
     }
@@ -735,6 +686,15 @@ public class MainActivity extends AppCompatActivity {
             wakeFloatingBar();
         });
 
+        findViewById(R.id.btnPrompterFontMinus).setOnClickListener(v -> {
+            adjustFontSize(-4);
+            wakeFloatingBar();
+        });
+        findViewById(R.id.btnPrompterFontPlus).setOnClickListener(v -> {
+            adjustFontSize(4);
+            wakeFloatingBar();
+        });
+
         tapGestureDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
             @Override
             public boolean onSingleTapConfirmed(MotionEvent e) {
@@ -801,7 +761,7 @@ public class MainActivity extends AppCompatActivity {
         if (mediaSession != null) {
             mediaSession.setActive(true);
             updatePlaybackState(PlaybackStateCompat.STATE_PLAYING);
-        }
+            }
 
         isLandscape = true;
         setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
@@ -903,6 +863,15 @@ public class MainActivity extends AppCompatActivity {
         showHud("⏮ 回到文稿开头");
     }
 
+    private void adjustFontSize(int delta) {
+        currentFontSize = Math.max(24, Math.min(90, currentFontSize + delta));
+        seekFontSize.setProgress(currentFontSize);
+        tvFontSizeValue.setText(currentFontSize + " sp");
+        tvPrompterText.setTextSize(currentFontSize);
+        showHud("🔤 字号: " + currentFontSize + " sp");
+        saveSettings();
+    }
+
     private void adjustSpeed(int delta, String trigger) {
         currentSpeed = Math.max(10, Math.min(200, currentSpeed + delta));
         seekSpeed.setProgress(currentSpeed);
@@ -986,12 +955,6 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        if (silentMediaPlayer != null) {
-            try {
-                silentMediaPlayer.stop();
-                silentMediaPlayer.release();
-            } catch (Exception ignored) {}
-        }
         if (mediaSession != null) {
             mediaSession.release();
         }
