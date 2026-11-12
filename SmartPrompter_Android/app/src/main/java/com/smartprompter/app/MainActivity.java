@@ -17,10 +17,12 @@ import android.os.Handler;
 import android.os.Looper;
 import android.support.v4.media.session.MediaSessionCompat;
 import android.support.v4.media.session.PlaybackStateCompat;
+import android.view.GestureDetector;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
+import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
@@ -34,11 +36,11 @@ import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
 
 /**
- * 智能提词器主界面 (OPPO / ColorOS & TWS 耳机深度适配版)
- * 1. 使用 ScrollView 彻底解决长文本截断、显示半截的问题
- * 2. 内置静音 AudioTrack 音频流 + MediaSessionCompat.Callback (onPlay/onPause)，
- *    确保 OPPO Enco Air5 Pro 等 TWS 耳机单击暂停/继续稳定生效
- * 3. 音量加/减直接调节滚动速度，并拦截系统音量弹窗
+ * 智能提词器主界面 (v5)
+ * 1. 点击屏幕：开始 / 暂停提词
+ * 2. 上下滑动屏幕：调节滚动速度（上滑加速 +10 px/s，下滑减速 -10 px/s）
+ * 3. TWS 耳机：单击暂停/继续（保持 STATE_PLAYING 防系统丢焦点），滑动耳机柄调音量同步调速（±10 px/s）
+ * 4. 镜像与旋转：支持 正常 / 水平镜像 / 旋转180° / 水平镜像+旋转180°
  */
 public class MainActivity extends AppCompatActivity {
 
@@ -46,14 +48,23 @@ public class MainActivity extends AppCompatActivity {
     private static final String KEY_SCRIPT = "key_script";
     private static final String KEY_SPEED = "key_speed";
     private static final String KEY_FONT_SIZE = "key_font_size";
-    private static final String KEY_MIRROR = "key_mirror";
+    private static final String KEY_MIRROR_MODE = "key_mirror_mode";
     private static final String KEY_FOCUS_LINE = "key_focus_line";
+
+    private static final int SPEED_STEP = 10;
+
+    private static final String[] MIRROR_LABELS = {
+            "正常显示",
+            "水平镜像",
+            "旋转180°",
+            "水平镜像+180°"
+    };
 
     private static final String DEFAULT_SAMPLE = "大家好，欢迎来到今天的分享。\n\n"
             + "今天我们要聊的是：如何用科技让工作与创作更高效。\n\n"
             + "当你站在镜头前，眼神要坚定，语速要平稳，自然呼吸。\n\n"
             + "通过蓝牙耳机遥控，双手无需触碰屏幕，按一下耳机即可随时暂停或继续；\n\n"
-            + "感觉语速跟不上？直接按手机或耳机的音量键，随时加减滚动速度！\n\n"
+            + "感觉语速跟不上？上下滑动屏幕或耳机音量键，每次加减 10 px/s 滚动速度！\n\n"
             + "祝你拍摄顺利，录制一遍过！";
 
     private LinearLayout layoutEditor;
@@ -64,7 +75,7 @@ public class MainActivity extends AppCompatActivity {
     private TextView tvSpeedValue;
     private SeekBar seekFontSize;
     private TextView tvFontSizeValue;
-    private CheckBox cbMirror;
+    private Button btnMirrorMode;
     private CheckBox cbFocusLine;
     private View viewFocusLine;
     private TextView tvPrompterText;
@@ -79,7 +90,7 @@ public class MainActivity extends AppCompatActivity {
 
     private int currentSpeed = 45;
     private int currentFontSize = 48;
-    private boolean isMirror = false;
+    private int mirrorMode = 0; // 0:正常, 1:水平镜像, 2:旋转180°, 3:水平镜像+旋转180°
     private boolean showFocusLine = true;
     private boolean isPlaying = false;
     private boolean isPrompterActive = false;
@@ -93,10 +104,13 @@ public class MainActivity extends AppCompatActivity {
     private AudioFocusRequest audioFocusRequest;
     private AudioTrack silentAudioTrack;
     private VolumeChangeReceiver volumeReceiver;
-    private int lastAudioVolume = -1;
     private int midVolume = 7;
     private int savedOriginalVolume = -1;
     private long lastMediaKeyTime = 0;
+
+    private GestureDetector tapGestureDetector;
+    private float swipeAnchorY = 0f;
+    private boolean isSwipeAdjustingSpeed = false;
 
     private final Handler hudHandler = new Handler(Looper.getMainLooper());
 
@@ -123,7 +137,7 @@ public class MainActivity extends AppCompatActivity {
         tvSpeedValue = findViewById(R.id.tvSpeedValue);
         seekFontSize = findViewById(R.id.seekFontSize);
         tvFontSizeValue = findViewById(R.id.tvFontSizeValue);
-        cbMirror = findViewById(R.id.cbMirror);
+        btnMirrorMode = findViewById(R.id.btnMirrorMode);
         cbFocusLine = findViewById(R.id.cbFocusLine);
         viewFocusLine = findViewById(R.id.viewFocusLine);
         tvPrompterText = findViewById(R.id.tvPrompterText);
@@ -142,7 +156,7 @@ public class MainActivity extends AppCompatActivity {
         String savedText = sp.getString(KEY_SCRIPT, DEFAULT_SAMPLE);
         currentSpeed = sp.getInt(KEY_SPEED, 45);
         currentFontSize = sp.getInt(KEY_FONT_SIZE, 48);
-        isMirror = sp.getBoolean(KEY_MIRROR, false);
+        mirrorMode = sp.getInt(KEY_MIRROR_MODE, 0) % 4;
         showFocusLine = sp.getBoolean(KEY_FOCUS_LINE, true);
 
         etScript.setText(savedText);
@@ -153,7 +167,7 @@ public class MainActivity extends AppCompatActivity {
         seekFontSize.setProgress(currentFontSize);
         tvFontSizeValue.setText(currentFontSize + " sp");
 
-        cbMirror.setChecked(isMirror);
+        btnMirrorMode.setText("方向: " + MIRROR_LABELS[mirrorMode]);
         cbFocusLine.setChecked(showFocusLine);
 
         updateWordCount();
@@ -164,7 +178,7 @@ public class MainActivity extends AppCompatActivity {
         editor.putString(KEY_SCRIPT, etScript.getText().toString());
         editor.putInt(KEY_SPEED, currentSpeed);
         editor.putInt(KEY_FONT_SIZE, currentFontSize);
-        editor.putBoolean(KEY_MIRROR, isMirror);
+        editor.putInt(KEY_MIRROR_MODE, mirrorMode);
         editor.putBoolean(KEY_FOCUS_LINE, showFocusLine);
         editor.apply();
     }
@@ -205,7 +219,7 @@ public class MainActivity extends AppCompatActivity {
         mediaSession.setFlags(MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS
                 | MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS);
 
-        updatePlaybackState(PlaybackStateCompat.STATE_PAUSED);
+        updatePlaybackState(PlaybackStateCompat.STATE_PLAYING);
 
         mediaSession.setCallback(new MediaSessionCompat.Callback() {
             @Override
@@ -213,9 +227,9 @@ public class MainActivity extends AppCompatActivity {
                 if (isDebounced()) return;
                 runOnUiThread(() -> {
                     if (isPrompterActive) {
-                        startPrompter("耳机播放");
+                        togglePrompterPlayPause("TWS耳机");
                     } else {
-                        tvRemoteSignalBadge.setText("🟢 收到耳机播放指令 (开启提词后生效)");
+                        tvRemoteSignalBadge.setText("🟢 收到耳机指令 (开启提词后生效)");
                     }
                 });
             }
@@ -225,21 +239,21 @@ public class MainActivity extends AppCompatActivity {
                 if (isDebounced()) return;
                 runOnUiThread(() -> {
                     if (isPrompterActive) {
-                        pausePrompter("耳机暂停");
+                        togglePrompterPlayPause("TWS耳机");
                     } else {
-                        tvRemoteSignalBadge.setText("🟢 收到耳机暂停指令 (开启提词后生效)");
+                        tvRemoteSignalBadge.setText("🟢 收到耳机指令 (开启提词后生效)");
                     }
                 });
             }
 
             @Override
             public void onSkipToNext() {
-                runOnUiThread(() -> adjustSpeed(5, "耳机切歌(下一首)"));
+                runOnUiThread(() -> adjustSpeed(SPEED_STEP, "耳机切歌(下一首)"));
             }
 
             @Override
             public void onSkipToPrevious() {
-                runOnUiThread(() -> adjustSpeed(-5, "耳机切歌(上一首)"));
+                runOnUiThread(() -> adjustSpeed(-SPEED_STEP, "耳机切歌(上一首)"));
             }
 
             @Override
@@ -283,7 +297,7 @@ public class MainActivity extends AppCompatActivity {
 
     private boolean isDebounced() {
         long now = System.currentTimeMillis();
-        if (now - lastMediaKeyTime < 250) {
+        if (now - lastMediaKeyTime < 350) {
             return true;
         }
         lastMediaKeyTime = now;
@@ -328,7 +342,6 @@ public class MainActivity extends AppCompatActivity {
         if (audioManager != null) {
             int maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
             midVolume = Math.max(1, maxVol / 2);
-            lastAudioVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC);
         }
 
         volumeReceiver = new VolumeChangeReceiver();
@@ -354,12 +367,11 @@ public class MainActivity extends AppCompatActivity {
                 if (volume == -1 || volume == midVolume) return;
 
                 if (volume > midVolume) {
-                    adjustSpeed(+5, "耳机/音量上滑 ➔ 滚速加快一档");
+                    adjustSpeed(SPEED_STEP, "耳机音量上滑 ➔ 加速");
                 } else {
-                    adjustSpeed(-5, "耳机/音量下滑 ➔ 滚速放慢一档");
+                    adjustSpeed(-SPEED_STEP, "耳机音量下滑 ➔ 减速");
                 }
 
-                // 静默归位到中间音量，防止滑到最大/最小后无法继续调速
                 if (audioManager != null) {
                     try {
                         audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, midVolume, 0);
@@ -375,12 +387,12 @@ public class MainActivity extends AppCompatActivity {
         if (isPrompterActive) {
             if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
                 if (event.getAction() == KeyEvent.ACTION_DOWN) {
-                    adjustSpeed(+5, "音量加 ➔ 滚速加快一档");
+                    adjustSpeed(SPEED_STEP, "音量加 ➔ 加速");
                 }
                 return true;
             } else if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
                 if (event.getAction() == KeyEvent.ACTION_DOWN) {
-                    adjustSpeed(-5, "音量减 ➔ 滚速放慢一档");
+                    adjustSpeed(-SPEED_STEP, "音量减 ➔ 减速");
                 }
                 return true;
             } else if (keyCode == KeyEvent.KEYCODE_HEADSETHOOK
@@ -390,14 +402,9 @@ public class MainActivity extends AppCompatActivity {
                     togglePrompterPlayPause("按键控制");
                 }
                 return true;
-            } else if (keyCode == KeyEvent.KEYCODE_MEDIA_PLAY) {
+            } else if (keyCode == KeyEvent.KEYCODE_MEDIA_PLAY || keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE) {
                 if (event.getAction() == KeyEvent.ACTION_DOWN && !isDebounced()) {
-                    startPrompter("耳机播放");
-                }
-                return true;
-            } else if (keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE) {
-                if (event.getAction() == KeyEvent.ACTION_DOWN && !isDebounced()) {
-                    pausePrompter("耳机暂停");
+                    togglePrompterPlayPause("TWS耳机");
                 }
                 return true;
             }
@@ -446,9 +453,8 @@ public class MainActivity extends AppCompatActivity {
             @Override public void onStopTrackingTouch(SeekBar seekBar) {}
         });
 
-        cbMirror.setOnCheckedChangeListener((btn, isChecked) -> {
-            isMirror = isChecked;
-            savePreferences();
+        btnMirrorMode.setOnClickListener(v -> {
+            cycleMirrorMode(false);
         });
 
         cbFocusLine.setOnCheckedChangeListener((btn, isChecked) -> {
@@ -459,23 +465,67 @@ public class MainActivity extends AppCompatActivity {
         findViewById(R.id.btnLaunchPrompter).setOnClickListener(v -> openPrompter());
         findViewById(R.id.btnPrompterExit).setOnClickListener(v -> exitPrompter());
         findViewById(R.id.btnPrompterRestart).setOnClickListener(v -> restartPrompter());
-        btnPrompterPlayPause.setOnClickListener(v -> togglePrompterPlayPause("屏幕触控"));
-        findViewById(R.id.btnPrompterSpeedMinus).setOnClickListener(v -> adjustSpeed(-5, "手动减速"));
-        findViewById(R.id.btnPrompterSpeedPlus).setOnClickListener(v -> adjustSpeed(+5, "手动加速"));
-        findViewById(R.id.btnPrompterMirror).setOnClickListener(v -> {
-            isMirror = !isMirror;
-            applyMirror();
-            showHud("镜像翻转: " + (isMirror ? "开" : "关"));
-            savePreferences();
+        btnPrompterPlayPause.setOnClickListener(v -> togglePrompterPlayPause("屏幕按钮"));
+        findViewById(R.id.btnPrompterSpeedMinus).setOnClickListener(v -> adjustSpeed(-SPEED_STEP, "手动减速"));
+        findViewById(R.id.btnPrompterSpeedPlus).setOnClickListener(v -> adjustSpeed(SPEED_STEP, "手动加速"));
+        findViewById(R.id.btnPrompterMirror).setOnClickListener(v -> cycleMirrorMode(true));
+
+        // 提词器屏幕手势：单击 = 播放/暂停；上下滑动 = 调节滚动速度 (±10 px/s)
+        tapGestureDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
+            @Override
+            public boolean onSingleTapConfirmed(MotionEvent e) {
+                if (isPrompterActive) {
+                    togglePrompterPlayPause("点击屏幕");
+                    wakeFloatingBar();
+                }
+                return true;
+            }
         });
 
         prompterScrollContainer.setOnTouchListener((v, event) -> {
-            if (event.getAction() == MotionEvent.ACTION_UP || event.getAction() == MotionEvent.ACTION_MOVE) {
-                currentScrollY = prompterScrollContainer.getScrollY();
-                wakeFloatingBar();
+            tapGestureDetector.onTouchEvent(event);
+
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    swipeAnchorY = event.getRawY();
+                    isSwipeAdjustingSpeed = false;
+                    break;
+                case MotionEvent.ACTION_MOVE:
+                    float dy = swipeAnchorY - event.getRawY(); // 向上滑 dy > 0，向下滑 dy < 0
+                    if (Math.abs(dy) >= 85f) {
+                        isSwipeAdjustingSpeed = true;
+                        if (dy > 0) {
+                            adjustSpeed(SPEED_STEP, "上滑屏幕 ➔ 加速");
+                        } else {
+                            adjustSpeed(-SPEED_STEP, "下滑屏幕 ➔ 减速");
+                        }
+                        swipeAnchorY = event.getRawY();
+                        wakeFloatingBar();
+                    }
+                    break;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    wakeFloatingBar();
+                    if (isSwipeAdjustingSpeed) {
+                        isSwipeAdjustingSpeed = false;
+                        return true; // 消费滑动调速手势，不触发 ScrollView 跳动
+                    }
+                    break;
             }
-            return false;
+            // 返回 true 拦截 ScrollView 默认拖拽，专注“点击启停 + 上下滑动调速”
+            return true;
         });
+    }
+
+    private void cycleMirrorMode(boolean inPrompter) {
+        mirrorMode = (mirrorMode + 1) % 4;
+        btnMirrorMode.setText("方向: " + MIRROR_LABELS[mirrorMode]);
+        applyMirror();
+        savePreferences();
+        if (inPrompter) {
+            showHud("🔄 " + MIRROR_LABELS[mirrorMode]);
+            wakeFloatingBar();
+        }
     }
 
     private void updateWordCount() {
@@ -522,6 +572,8 @@ public class MainActivity extends AppCompatActivity {
     private void exitPrompter() {
         pausePrompter("退出提词");
         isPrompterActive = false;
+        updatePlaybackState(PlaybackStateCompat.STATE_PAUSED);
+
         if (audioManager != null && savedOriginalVolume != -1) {
             try {
                 audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, savedOriginalVolume, 0);
@@ -535,11 +587,20 @@ public class MainActivity extends AppCompatActivity {
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
     }
 
+    /**
+     * 应用镜像与旋转模式到全屏 ScrollView 容器：
+     * 0: 正常显示
+     * 1: 水平镜像 (scaleX = -1)
+     * 2: 旋转 180° (rotation = 180)
+     * 3: 水平镜像 + 旋转 180° (scaleX = -1, rotation = 180)
+     */
     private void applyMirror() {
         if (isMirror) {
-            framePrompterContent.setScaleX(-1.0f);
+            prompterScrollContainer.setScaleX(-1.0f);
+            prompterScrollContainer.setRotation(180f);
         } else {
-            framePrompterContent.setScaleX(1.0f);
+            prompterScrollContainer.setScaleX(1.0f);
+            prompterScrollContainer.setRotation(0f);
         }
     }
 
@@ -557,7 +618,8 @@ public class MainActivity extends AppCompatActivity {
     private void pausePrompter(String source) {
         if (!isPlaying) return;
         isPlaying = false;
-        updatePlaybackState(PlaybackStateCompat.STATE_PAUSED);
+        // 保持 STATE_PLAYING，防止 ColorOS 在暂停后把下一次耳机点击路由给其他音乐软件
+        updatePlaybackState(isPrompterActive ? PlaybackStateCompat.STATE_PLAYING : PlaybackStateCompat.STATE_PAUSED);
         scrollHandler.removeCallbacks(scrollRunnable);
         btnPrompterPlayPause.setImageResource(android.R.drawable.ic_media_play);
         showHud("⏸ 暂停滚动 (" + source + ")");
