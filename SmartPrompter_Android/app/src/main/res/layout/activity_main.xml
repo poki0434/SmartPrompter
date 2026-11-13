@@ -302,6 +302,15 @@
                     android:textColor="#CBD5E1"
                     android:textSize="12sp"
                     android:layout_marginStart="16dp" />
+
+                <CheckBox
+                    android:id="@+id/cbVoiceFollow"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="AI跟读变色"
+                    android:textColor="#38BDF8"
+                    android:textSize="12sp"
+                    android:layout_marginStart="12dp" />
             </LinearLayout>
         </LinearLayout>
     </LinearLayout>
