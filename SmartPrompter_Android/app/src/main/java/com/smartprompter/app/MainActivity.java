@@ -1082,8 +1082,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private boolean isIgnorableChar(char c) {
-        return Character.isWhitespace(c)
-                || "，。！？、；：“”‘’（）()【】[].,!?;:"'—…·".indexOf(c) >= 0;
+        return !Character.isLetterOrDigit(c);
     }
 
     private char normalizeChar(char c) {
