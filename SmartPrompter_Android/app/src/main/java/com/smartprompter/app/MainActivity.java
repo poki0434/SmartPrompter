@@ -13,7 +13,9 @@ import android.graphics.drawable.GradientDrawable;
 import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
+import android.net.Uri;
 import android.os.Build;
+import android.provider.Settings;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -754,6 +756,7 @@ public class MainActivity extends AppCompatActivity {
         });
 
         findViewById(R.id.btnLaunchPrompter).setOnClickListener(v -> openPrompter());
+        findViewById(R.id.btnLaunchFloating).setOnClickListener(v -> launchFloatingPrompter());
         findViewById(R.id.btnPrompterExit).setOnClickListener(v -> exitPrompter());
         findViewById(R.id.btnPrompterRestart).setOnClickListener(v -> restartPrompter());
         btnPrompterPlayPause.setOnClickListener(v -> togglePrompterPlayPause("屏幕按钮"));
@@ -856,6 +859,26 @@ public class MainActivity extends AppCompatActivity {
         int count = etScript.getText().toString().trim().length();
         int estimatedSec = Math.round((count / 240.0f) * 60);
         tvWordCount.setText(count + " 字 · 约 " + estimatedSec + " 秒");
+    }
+
+    private void launchFloatingPrompter() {
+        saveCurrentDraftFromEditor();
+        saveSettings();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
+            Toast.makeText(this, "请先开启“显示在其他应用上层”权限", Toast.LENGTH_LONG).show();
+            Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:" + getPackageName()));
+            startActivity(intent);
+            return;
+        }
+        Intent svc = new Intent(this, FloatingPrompterService.class);
+        svc.putExtra(FloatingPrompterService.EXTRA_SCRIPT, etScript.getText().toString());
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(svc);
+        } else {
+            startService(svc);
+        }
+        moveTaskToBack(true);
     }
 
     private void openPrompter() {

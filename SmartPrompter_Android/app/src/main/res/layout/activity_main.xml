@@ -102,6 +102,15 @@
                 android:textStyle="bold" />
 
             <Button
+                android:id="@+id/btnLaunchFloating"
+                android:layout_width="wrap_content"
+                android:layout_height="38dp"
+                android:layout_marginEnd="6dp"
+                android:text="悬浮窗"
+                android:textColor="#FFFFFF"
+                android:backgroundTint="#0EA5E9" />
+
+            <Button
                 android:id="@+id/btnLaunchPrompter"
                 android:layout_width="wrap_content"
                 android:layout_height="38dp"
