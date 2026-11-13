@@ -130,6 +130,7 @@ public class MainActivity extends AppCompatActivity {
     private LinearLayout layoutFloatingBarInner;
     private ImageButton btnPrompterMirror;
     private ImageButton btnPrompterAlign;
+    private Button btnPrompterAi;
     private ImageButton btnPrompterPlayPause;
     private TextView tvPrompterSpeedIndicator;
 
@@ -215,6 +216,7 @@ public class MainActivity extends AppCompatActivity {
         layoutFloatingBarInner = findViewById(R.id.layoutFloatingBarInner);
         btnPrompterMirror = findViewById(R.id.btnPrompterMirror);
         btnPrompterAlign = findViewById(R.id.btnPrompterAlign);
+        btnPrompterAi = findViewById(R.id.btnPrompterAi);
         btnPrompterPlayPause = findViewById(R.id.btnPrompterPlayPause);
         tvPrompterSpeedIndicator = findViewById(R.id.tvPrompterSpeedIndicator);
         framePrompterContent.setLayerType(View.LAYER_TYPE_HARDWARE, null);
@@ -762,6 +764,7 @@ public class MainActivity extends AppCompatActivity {
             cbMirror.setChecked(isMirror);
             applyMirror();
         applyAlignment();
+        updateAiButtonStyle();
             saveSettings();
             showHud("🪞 镜像(水平+180°): " + (isMirror ? "开" : "关"));
             wakeFloatingBar();
@@ -772,6 +775,22 @@ public class MainActivity extends AppCompatActivity {
             applyAlignment();
             saveSettings();
             showHud(isAlignLeft ? "📐 已切换为左对齐" : "📐 已切换为居中对齐");
+            wakeFloatingBar();
+        });
+
+        btnPrompterAi.setOnClickListener(v -> {
+            isVoiceFollow = !isVoiceFollow;
+            cbVoiceFollow.setChecked(isVoiceFollow);
+            saveSettings();
+            updateAiButtonStyle();
+            if (isVoiceFollow) {
+                pausePrompter("切换AI跟读");
+                ensureMicPermissionAndInitVoice();
+                showHud("🎤 AI跟读: 开");
+            } else {
+                if (voiceFollower != null) voiceFollower.stopListening();
+                showHud("🎤 AI跟读: 关");
+            }
             wakeFloatingBar();
         });
 
@@ -930,6 +949,11 @@ public class MainActivity extends AppCompatActivity {
             prompterScrollContainer.setRotation(0f);
             btnPrompterMirror.setColorFilter(Color.parseColor("#CBD5E1"));
         }
+    }
+
+    private void updateAiButtonStyle() {
+        if (btnPrompterAi == null) return;
+        btnPrompterAi.setTextColor(Color.parseColor(isVoiceFollow ? "#38BDF8" : "#CBD5E1"));
     }
 
     private void applyAlignment() {

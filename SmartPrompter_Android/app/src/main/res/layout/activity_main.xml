@@ -289,7 +289,7 @@
                     android:id="@+id/cbMirror"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="镜像模式(水平+180°)"
+                    android:text="镜像"
                     android:textColor="#CBD5E1"
                     android:textSize="12sp" />
 
@@ -297,7 +297,7 @@
                     android:id="@+id/cbFocusLine"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="对齐参考线"
+                    android:text="参考线"
                     android:checked="true"
                     android:textColor="#CBD5E1"
                     android:textSize="12sp"
@@ -307,7 +307,7 @@
                     android:id="@+id/cbVoiceFollow"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="AI跟读变色"
+                    android:text="AI跟读"
                     android:textColor="#38BDF8"
                     android:textSize="12sp"
                     android:layout_marginStart="12dp" />
@@ -399,7 +399,7 @@
 
                 <ImageButton
                     android:id="@+id/btnPrompterExit"
-                    android:layout_width="30dp"
+                    android:layout_width="28dp"
                     android:layout_height="34dp"
                     android:padding="5dp"
                     android:scaleType="centerInside"
@@ -409,7 +409,7 @@
 
                 <ImageButton
                     android:id="@+id/btnPrompterRestart"
-                    android:layout_width="30dp"
+                    android:layout_width="28dp"
                     android:layout_height="34dp"
                     android:padding="5dp"
                     android:scaleType="centerInside"
@@ -484,7 +484,7 @@
 
                 <ImageButton
                     android:id="@+id/btnPrompterMirror"
-                    android:layout_width="30dp"
+                    android:layout_width="28dp"
                     android:layout_height="34dp"
                     android:padding="5dp"
                     android:scaleType="centerInside"
@@ -494,7 +494,7 @@
 
                 <ImageButton
                     android:id="@+id/btnPrompterAlign"
-                    android:layout_width="30dp"
+                    android:layout_width="28dp"
                     android:layout_height="34dp"
                     android:padding="5dp"
                     android:scaleType="centerInside"
@@ -502,9 +502,22 @@
                     android:src="@drawable/ic_align_center"
                     android:contentDescription="对齐方式" />
 
+                <Button
+                    android:id="@+id/btnPrompterAi"
+                    style="?android:attr/borderlessButtonStyle"
+                    android:layout_width="28dp"
+                    android:layout_height="34dp"
+                    android:minWidth="0dp"
+                    android:padding="0dp"
+                    android:text="Ai"
+                    android:textAllCaps="false"
+                    android:textColor="#CBD5E1"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+
                 <ImageButton
                     android:id="@+id/btnPrompterOrientation"
-                    android:layout_width="30dp"
+                    android:layout_width="28dp"
                     android:layout_height="34dp"
                     android:padding="5dp"
                     android:scaleType="centerInside"
