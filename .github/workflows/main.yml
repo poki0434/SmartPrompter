@@ -18,10 +18,23 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
+      - name: Download Offline Speech Model & Sherpa-ONNX AAR
+        run: |
+          if [ -d "SmartPrompter_Android" ]; then
+            cd SmartPrompter_Android
+          fi
+          mkdir -p app/libs app/src/main/assets
+          curl -fsSL "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.12.23/sherpa-onnx-1.12.23.aar" -o app/libs/sherpa-onnx.aar
+          curl -fsSL "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23.tar.bz2" -o model.tar.bz2
+          tar xjf model.tar.bz2 -C app/src/main/assets/
+          rm -f model.tar.bz2
+          ls -lh app/libs/sherpa-onnx.aar
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.2'
+          cache-disabled: true
 
       - name: Build APK
         run: |
