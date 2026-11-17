@@ -53,6 +53,8 @@ public class FloatingPrompterService extends Service {
     private static final String KEY_FLOAT_ALPHA = "key_float_alpha";
     private static final String KEY_SPEED = "key_speed";
     private static final String KEY_ALIGN_LEFT = "key_align_left";
+    private static final String KEY_MIRROR = "key_mirror";
+    private static final String KEY_VOICE_FOLLOW = "key_voice_follow";
 
     private WindowManager windowManager;
     private View floatView;
@@ -64,6 +66,7 @@ public class FloatingPrompterService extends Service {
     private TextView tvFloatText;
     private TextView tvFloatSpeed;
     private Button btnFloatPlay;
+    private ImageButton btnFloatMirror;
     private ImageButton btnFloatAlign;
     private Button btnFloatAi;
 
@@ -73,7 +76,9 @@ public class FloatingPrompterService extends Service {
     private int floatAlpha = 55; // 10 ~ 90 (%)
     private boolean isAlignLeft = false;
     private boolean isPlaying = true;
+    private boolean isMirror = false;
     private boolean isAiOn = false;
+    private final ForegroundColorSpan ktvSpan = new ForegroundColorSpan(Color.parseColor("#FACC15"));
     private boolean isLocked = false;
 
     private float currentScrollY = 0f;
@@ -175,6 +180,8 @@ public class FloatingPrompterService extends Service {
         floatAlpha = sp.getInt(KEY_FLOAT_ALPHA, 55);
         currentSpeed = sp.getInt(KEY_SPEED, 35);
         isAlignLeft = sp.getBoolean(KEY_ALIGN_LEFT, false);
+        isMirror = sp.getBoolean(KEY_MIRROR, false);
+        isAiOn = sp.getBoolean(KEY_VOICE_FOLLOW, false);
 
         int type = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -195,6 +202,7 @@ public class FloatingPrompterService extends Service {
         tvFloatText = floatView.findViewById(R.id.tvFloatText);
         tvFloatSpeed = floatView.findViewById(R.id.tvFloatSpeed);
         btnFloatPlay = floatView.findViewById(R.id.btnFloatPlay);
+        btnFloatMirror = floatView.findViewById(R.id.btnFloatMirror);
         btnFloatAlign = floatView.findViewById(R.id.btnFloatAlign);
         btnFloatAi = floatView.findViewById(R.id.btnFloatAi);
 
@@ -202,6 +210,13 @@ public class FloatingPrompterService extends Service {
         tvFloatText.setTextSize(floatFontSize);
         applyBackgroundAlpha();
         applyAlignment();
+        applyMirror();
+        btnFloatAi.setTextColor(Color.parseColor(isAiOn ? "#38BDF8" : "#CBD5E1"));
+        floatScrollContainer.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, orr, ob) -> {
+            floatScrollContainer.setPivotX((r - l) / 2.0f);
+            floatScrollContainer.setPivotY((b - t) / 2.0f);
+            applyMirror();
+        });
 
         SeekBar opacitySeek = floatView.findViewById(R.id.floatOpacitySeek);
         opacitySeek.setProgress(floatAlpha);
@@ -235,16 +250,31 @@ public class FloatingPrompterService extends Service {
             floatFontSize = Math.min(36, floatFontSize + 2);
             tvFloatText.setTextSize(floatFontSize);
         });
+        btnFloatMirror.setOnClickListener(v -> {
+            isMirror = !isMirror;
+            applyMirror();
+            saveFloatPrefs();
+        });
+
         btnFloatAlign.setOnClickListener(v -> {
             isAlignLeft = !isAlignLeft;
             applyAlignment();
+        applyMirror();
+        btnFloatAi.setTextColor(Color.parseColor(isAiOn ? "#38BDF8" : "#CBD5E1"));
+        floatScrollContainer.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, orr, ob) -> {
+            floatScrollContainer.setPivotX((r - l) / 2.0f);
+            floatScrollContainer.setPivotY((b - t) / 2.0f);
+            applyMirror();
+        });
             saveFloatPrefs();
         });
         btnFloatAi.setOnClickListener(v -> {
             isAiOn = !isAiOn;
             btnFloatAi.setTextColor(Color.parseColor(isAiOn ? "#38BDF8" : "#CBD5E1"));
+            saveFloatPrefs();
             if (isAiOn) {
                 pauseScrolling();
+                syncFloatHighlightToTopVisibleLine();
                 startVoiceFollow();
             } else if (voiceFollower != null) {
                 voiceFollower.stopListening();
@@ -321,18 +351,30 @@ public class FloatingPrompterService extends Service {
                     break;
                 case MotionEvent.ACTION_MOVE:
                     float rawY = event.getRawY();
-                    float dy = lastTouchY - rawY;
+                    float dy = isMirror ? (rawY - lastTouchY) : (lastTouchY - rawY);
                     lastTouchY = rawY;
                     int maxS = Math.max(0, floatTextWrapper.getHeight() - floatScrollContainer.getHeight());
                     currentScrollY = Math.max(0f, Math.min(maxS, currentScrollY + dy));
                     floatTextWrapper.setTranslationY(-currentScrollY);
+                    break;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    if (isAiOn) {
+                        syncFloatHighlightToTopVisibleLine();
+                    }
                     break;
             }
             return true;
         });
 
         windowManager.addView(floatView, params);
-        startScrolling();
+        if (isAiOn) {
+            isPlaying = false;
+            btnFloatPlay.setText("▶");
+            startVoiceFollow();
+        } else {
+            startScrolling();
+        }
     }
 
     private void setLocked(boolean locked) {
@@ -349,6 +391,22 @@ public class FloatingPrompterService extends Service {
     private void applyBackgroundAlpha() {
         int a = Math.round((floatAlpha / 100.0f) * 255);
         floatRootContainer.setBackgroundColor(Color.argb(a, 15, 23, 42));
+    }
+
+    private void applyMirror() {
+        if (floatScrollContainer.getWidth() > 0 && floatScrollContainer.getHeight() > 0) {
+            floatScrollContainer.setPivotX(floatScrollContainer.getWidth() / 2.0f);
+            floatScrollContainer.setPivotY(floatScrollContainer.getHeight() / 2.0f);
+        }
+        if (isMirror) {
+            floatScrollContainer.setScaleX(-1.0f);
+            floatScrollContainer.setRotation(180f);
+            btnFloatMirror.setColorFilter(Color.parseColor("#38BDF8"));
+        } else {
+            floatScrollContainer.setScaleX(1.0f);
+            floatScrollContainer.setRotation(0f);
+            btnFloatMirror.setColorFilter(Color.parseColor("#CBD5E1"));
+        }
     }
 
     private void applyAlignment() {
@@ -442,18 +500,14 @@ public class FloatingPrompterService extends Service {
     private void startVoiceFollow() {
         if (voiceFollower == null) {
             voiceFollower = new VoiceFollower(this, new VoiceFollower.Listener() {
-                @Override public void onModelReady() {
-                    if (isAiOn) voiceFollower.startListening();
-                }
+                @Override public void onModelReady() {}
                 @Override public void onNewSpokenText(String deltaText) {
                     if (isAiOn) matchSpokenStrict(deltaText);
                 }
                 @Override public void onError(String msg) {}
             });
-            voiceFollower.initModelAsync();
-        } else {
-            voiceFollower.startListening();
         }
+        voiceFollower.initAndStart();
     }
 
     private void matchSpokenStrict(String delta) {
@@ -502,13 +556,29 @@ public class FloatingPrompterService extends Service {
         }
     }
 
+    private void syncFloatHighlightToTopVisibleLine() {
+        Layout layout = tvFloatText.getLayout();
+        if (layout == null || scriptText.isEmpty()) return;
+        int yInTextView = Math.max(0, Math.round(currentScrollY) - tvFloatText.getTop());
+        int firstVisibleLine = layout.getLineForVertical(yInTextView);
+        highlightedIndex = Math.min(layout.getLineStart(firstVisibleLine), scriptText.length());
+        renderText();
+    }
+
     private void renderText() {
-        SpannableString ss = new SpannableString(scriptText);
-        int end = Math.min(highlightedIndex, scriptText.length());
-        if (end > 0) {
-            ss.setSpan(new ForegroundColorSpan(Color.parseColor("#FACC15")), 0, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+        CharSequence cs = tvFloatText.getText();
+        if (cs instanceof Spannable && cs.toString().equals(scriptText)) {
+            Spannable sp = (Spannable) cs;
+            sp.removeSpan(ktvSpan);
+            int end = Math.min(highlightedIndex, sp.length());
+            if (end > 0) sp.setSpan(ktvSpan, 0, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+            tvFloatText.invalidate();
+        } else {
+            SpannableString ss = new SpannableString(scriptText);
+            int end = Math.min(highlightedIndex, scriptText.length());
+            if (end > 0) ss.setSpan(ktvSpan, 0, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+            tvFloatText.setText(ss, TextView.BufferType.SPANNABLE);
         }
-        tvFloatText.setText(ss);
     }
 
     private void saveFloatPrefs() {
@@ -520,6 +590,8 @@ public class FloatingPrompterService extends Service {
                 .putInt(KEY_FLOAT_ALPHA, floatAlpha)
                 .putInt(KEY_SPEED, currentSpeed)
                 .putBoolean(KEY_ALIGN_LEFT, isAlignLeft)
+                .putBoolean(KEY_MIRROR, isMirror)
+                .putBoolean(KEY_VOICE_FOLLOW, isAiOn)
                 .apply();
     }
 

@@ -24,18 +24,28 @@ class VoiceFollower(
         fun onError(msg: String)
     }
 
+    @Volatile
     private var recognizer: OnlineRecognizer? = null
-    private var audioRecord: AudioRecord? = null
+    @Volatile
+    private var isModelLoading = false
+    @Volatile
+    private var wantListening = false
     @Volatile
     private var isRunning = false
+
+    private var audioRecord: AudioRecord? = null
     private var workerThread: Thread? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    fun initModelAsync() {
+    fun initAndStart() {
+        wantListening = true
         if (recognizer != null) {
-            mainHandler.post { listener.onModelReady() }
+            startListeningInternal()
             return
         }
+        if (isModelLoading) return
+        isModelLoading = true
+
         Thread {
             try {
                 val modelDir = "sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23"
@@ -54,16 +64,23 @@ class VoiceFollower(
                     enableEndpoint = true
                 )
                 recognizer = OnlineRecognizer(assetManager = context.assets, config = config)
-                mainHandler.post { listener.onModelReady() }
+                isModelLoading = false
+                mainHandler.post {
+                    listener.onModelReady()
+                    if (wantListening) {
+                        startListeningInternal()
+                    }
+                }
             } catch (e: Throwable) {
+                isModelLoading = false
                 mainHandler.post { listener.onError("离线语音模型加载失败: ${e.message}") }
             }
         }.start()
     }
 
     @SuppressLint("MissingPermission")
-    fun startListening() {
-        if (isRunning) return
+    private fun startListeningInternal() {
+        if (isRunning || !wantListening) return
         val rec = recognizer ?: return
         val sampleRate = 16000
         val minBuf = AudioRecord.getMinBufferSize(
@@ -90,14 +107,18 @@ class VoiceFollower(
 
         workerThread = Thread {
             val stream: OnlineStream = rec.createStream()
-            val shortBuf = ShortArray(1600) // 100ms chunks
+            val shortBuf = ShortArray(1600)
+            val floatBuf = FloatArray(1600) // Pre-allocated: zero GC churn
             var lastLength = 0
 
             while (isRunning) {
                 val read = audioRecord?.read(shortBuf, 0, shortBuf.size) ?: 0
                 if (read > 0) {
-                    val floatBuf = FloatArray(read) { i -> shortBuf[i] / 32768.0f }
-                    stream.acceptWaveform(floatBuf, sampleRate)
+                    for (i in 0 until read) {
+                        floatBuf[i] = shortBuf[i] / 32768.0f
+                    }
+                    val slice = if (read == floatBuf.size) floatBuf else floatBuf.copyOf(read)
+                    stream.acceptWaveform(slice, sampleRate)
                     while (rec.isReady(stream)) {
                         rec.decode(stream)
                     }
@@ -119,6 +140,7 @@ class VoiceFollower(
     }
 
     fun stopListening() {
+        wantListening = false
         isRunning = false
         try {
             audioRecord?.stop()

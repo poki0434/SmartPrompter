@@ -151,6 +151,7 @@ public class MainActivity extends AppCompatActivity {
     private boolean isAlignLeft = false;
     private boolean isVoiceFollow = false;
     private int highlightedIndex = 0;
+    private final ForegroundColorSpan ktvHighlightSpan = new ForegroundColorSpan(Color.parseColor("#FACC15"));
     private String currentPrompterScript = "";
     private VoiceFollower voiceFollower;
     private boolean isPlaying = false;
@@ -221,7 +222,13 @@ public class MainActivity extends AppCompatActivity {
         btnPrompterAi = findViewById(R.id.btnPrompterAi);
         btnPrompterPlayPause = findViewById(R.id.btnPrompterPlayPause);
         tvPrompterSpeedIndicator = findViewById(R.id.tvPrompterSpeedIndicator);
-        framePrompterContent.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+        prompterScrollContainer.addOnLayoutChangeListener((v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
+            if (isPrompterActive) {
+                prompterScrollContainer.setPivotX((right - left) / 2.0f);
+                prompterScrollContainer.setPivotY((bottom - top) / 2.0f);
+                applyMirror();
+            }
+        });
     }
 
     private void loadSavedPreferences() {
@@ -750,9 +757,6 @@ public class MainActivity extends AppCompatActivity {
         cbVoiceFollow.setOnCheckedChangeListener((btn, isChecked) -> {
             isVoiceFollow = isChecked;
             saveSettings();
-            if (isChecked) {
-                ensureMicPermissionAndInitVoice();
-            }
         });
 
         findViewById(R.id.btnLaunchPrompter).setOnClickListener(v -> openPrompter());
@@ -787,9 +791,12 @@ public class MainActivity extends AppCompatActivity {
             saveSettings();
             updateAiButtonStyle();
             if (isVoiceFollow) {
+                // 开启AI跟读时自动暂停匀速滚动
+                isPlaying = true;
                 pausePrompter("切换AI跟读");
+                syncHighlightedIndexToTopVisibleLine();
                 ensureMicPermissionAndInitVoice();
-                showHud("🎤 AI跟读: 开");
+                showHud("🎤 AI跟读: 开 (已暂停自动滚动)");
             } else {
                 if (voiceFollower != null) voiceFollower.stopListening();
                 showHud("🎤 AI跟读: 关");
@@ -848,6 +855,9 @@ public class MainActivity extends AppCompatActivity {
                     break;
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_CANCEL:
+                    if (isVoiceFollow) {
+                        syncHighlightedIndexToTopVisibleLine();
+                    }
                     wakeFloatingBar();
                     break;
             }
@@ -918,7 +928,7 @@ public class MainActivity extends AppCompatActivity {
 
         currentPrompterScript = etScript.getText().toString();
         highlightedIndex = 0;
-        renderKtvText();
+        tvPrompterText.setText(new SpannableString(currentPrompterScript), TextView.BufferType.SPANNABLE);
         tvPrompterText.setTextSize(currentFontSize);
 
         applyMirror();
@@ -928,10 +938,17 @@ public class MainActivity extends AppCompatActivity {
         framePrompterContent.setTranslationY(0f);
         prompterScrollContainer.scrollTo(0, 0);
 
+        prompterScrollContainer.post(() -> {
+            prompterScrollContainer.setPivotX(prompterScrollContainer.getWidth() / 2.0f);
+            prompterScrollContainer.setPivotY(prompterScrollContainer.getHeight() / 2.0f);
+            applyMirror();
+        });
         wakeFloatingBar();
         if (isVoiceFollow) {
+            isPlaying = false;
+            btnPrompterPlayPause.setImageResource(android.R.drawable.ic_media_play);
             ensureMicPermissionAndInitVoice();
-            showHud("🎤 AI 严格跟读模式已开启");
+            showHud("🎤 正在启动 AI 严格跟读...");
         } else {
             startPrompter("开启提词");
         }
@@ -963,10 +980,14 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void applyMirror() {
+        if (prompterScrollContainer.getWidth() > 0 && prompterScrollContainer.getHeight() > 0) {
+            prompterScrollContainer.setPivotX(prompterScrollContainer.getWidth() / 2.0f);
+            prompterScrollContainer.setPivotY(prompterScrollContainer.getHeight() / 2.0f);
+        }
         if (isMirror) {
             prompterScrollContainer.setScaleX(-1.0f);
             prompterScrollContainer.setRotation(180f);
-            btnPrompterMirror.setColorFilter(Color.parseColor("#818CF8"));
+            btnPrompterMirror.setColorFilter(Color.parseColor("#38BDF8"));
         } else {
             prompterScrollContainer.setScaleX(1.0f);
             prompterScrollContainer.setRotation(0f);
@@ -1048,6 +1069,7 @@ public class MainActivity extends AppCompatActivity {
             } else {
                 isVoiceFollow = false;
                 cbVoiceFollow.setChecked(false);
+                updateAiButtonStyle();
                 saveSettings();
                 Toast.makeText(this, "需要麦克风权限才能使用 AI 跟读", Toast.LENGTH_SHORT).show();
             }
@@ -1060,7 +1082,6 @@ public class MainActivity extends AppCompatActivity {
                 @Override
                 public void onModelReady() {
                     if (isPrompterActive && isVoiceFollow) {
-                        voiceFollower.startListening();
                         showHud("🎤 语音模型就绪，请开始朗读");
                     }
                 }
@@ -1077,10 +1098,8 @@ public class MainActivity extends AppCompatActivity {
                     showHud("⚠️ " + msg);
                 }
             });
-            voiceFollower.initModelAsync();
-        } else if (isPrompterActive && isVoiceFollow) {
-            voiceFollower.startListening();
         }
+        voiceFollower.initAndStart();
     }
 
     /**
@@ -1151,13 +1170,35 @@ public class MainActivity extends AppCompatActivity {
 
     private void renderKtvText() {
         if (currentPrompterScript == null) currentPrompterScript = "";
-        SpannableString ss = new SpannableString(currentPrompterScript);
-        int end = Math.min(highlightedIndex, currentPrompterScript.length());
-        if (end > 0) {
-            ss.setSpan(new ForegroundColorSpan(Color.parseColor("#FACC15")),
-                    0, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+        CharSequence cs = tvPrompterText.getText();
+        if (cs instanceof Spannable) {
+            Spannable sp = (Spannable) cs;
+            sp.removeSpan(ktvHighlightSpan);
+            int end = Math.min(highlightedIndex, sp.length());
+            if (end > 0) {
+                sp.setSpan(ktvHighlightSpan, 0, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+            }
+            tvPrompterText.invalidate();
+        } else {
+            SpannableString ss = new SpannableString(currentPrompterScript);
+            int end = Math.min(highlightedIndex, currentPrompterScript.length());
+            if (end > 0) {
+                ss.setSpan(ktvHighlightSpan, 0, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+            }
+            tvPrompterText.setText(ss, TextView.BufferType.SPANNABLE);
         }
-        tvPrompterText.setText(ss);
+    }
+
+    /**
+     * 当用户把前面的行划出屏幕顶部时，自动把 AI 识别起点同步到当前屏幕显示的第一行
+     */
+    private void syncHighlightedIndexToTopVisibleLine() {
+        Layout layout = tvPrompterText.getLayout();
+        if (layout == null || currentPrompterScript.isEmpty()) return;
+        int yInTextView = Math.max(0, Math.round(currentScrollY) - tvPrompterText.getTop());
+        int firstVisibleLine = layout.getLineForVertical(yInTextView);
+        highlightedIndex = Math.min(layout.getLineStart(firstVisibleLine), currentPrompterScript.length());
+        renderKtvText();
     }
 
     private void scrollToHighlightedLine() {
