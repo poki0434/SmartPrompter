@@ -259,13 +259,6 @@ public class FloatingPrompterService extends Service {
         btnFloatAlign.setOnClickListener(v -> {
             isAlignLeft = !isAlignLeft;
             applyAlignment();
-        applyMirror();
-        btnFloatAi.setTextColor(Color.parseColor(isAiOn ? "#38BDF8" : "#CBD5E1"));
-        floatScrollContainer.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, orr, ob) -> {
-            floatScrollContainer.setPivotX((r - l) / 2.0f);
-            floatScrollContainer.setPivotY((b - t) / 2.0f);
-            applyMirror();
-        });
             saveFloatPrefs();
         });
         btnFloatAi.setOnClickListener(v -> {
