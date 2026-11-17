@@ -13,8 +13,10 @@ import android.graphics.drawable.GradientDrawable;
 import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
+import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
+import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.os.Bundle;
 import android.os.Handler;
@@ -58,7 +60,12 @@ import java.util.Locale;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
 
@@ -78,6 +85,14 @@ public class MainActivity extends AppCompatActivity {
     private static final String KEY_FOCUS_LINE = "key_focus_line";
     private static final String KEY_ALIGN_LEFT = "key_align_left";
     private static final String KEY_VOICE_FOLLOW = "key_voice_follow";
+    private static final String KEY_COUNTDOWN = "key_countdown";
+
+    private static final int REQ_IMPORT = 300;
+    private static final int REQ_EXPORT = 301;
+
+    private static final int EXPORT_TXT = 0;
+    private static final int EXPORT_MD = 1;
+    private static final int EXPORT_DOCX = 2;
 
     private static final int SPEED_STEP = 10;
 
@@ -92,11 +107,17 @@ public class MainActivity extends AppCompatActivity {
         String id;
         String title;
         String content;
+        boolean pinned;
 
         Draft(String id, String title, String content) {
+            this(id, title, content, false);
+        }
+
+        Draft(String id, String title, String content, boolean pinned) {
             this.id = id;
             this.title = title;
             this.content = content;
+            this.pinned = pinned;
         }
     }
 
@@ -120,6 +141,11 @@ public class MainActivity extends AppCompatActivity {
     private CheckBox cbMirror;
     private CheckBox cbFocusLine;
     private CheckBox cbVoiceFollow;
+    private CheckBox cbCountdown;
+    private EditText etSearch;
+    private Button btnImport;
+    private Button btnExport;
+    private TextView tvCountdown;
     private TextView tvRemoteSignalBadge;
 
     // 三级：提词控件
@@ -150,8 +176,12 @@ public class MainActivity extends AppCompatActivity {
     private boolean showFocusLine = true;
     private boolean isAlignLeft = false;
     private boolean isVoiceFollow = false;
+    private boolean countdownEnabled = false;
+    private String currentQuery = "";
+    private int pendingExportFormat = EXPORT_TXT;
     private int highlightedIndex = 0;
     private final ForegroundColorSpan ktvHighlightSpan = new ForegroundColorSpan(Color.parseColor("#FACC15"));
+    private final ForegroundColorSpan focusSpan = new ForegroundColorSpan(Color.parseColor("#FB923C"));
     private String currentPrompterScript = "";
     private VoiceFollower voiceFollower;
     private boolean isPlaying = false;
@@ -179,6 +209,10 @@ public class MainActivity extends AppCompatActivity {
     // 草稿防抖存盘：输入时延时批量落盘，避免每敲一键全量序列化
     private final Handler saveHandler = new Handler(Looper.getMainLooper());
     private Runnable saveDraftRunnable;
+
+    private final Handler countdownHandler = new Handler(Looper.getMainLooper());
+    private Runnable countdownRunnable;
+    private int countdownRemain = 0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -212,6 +246,11 @@ public class MainActivity extends AppCompatActivity {
         cbMirror = findViewById(R.id.cbMirror);
         cbFocusLine = findViewById(R.id.cbFocusLine);
         cbVoiceFollow = findViewById(R.id.cbVoiceFollow);
+        cbCountdown = findViewById(R.id.cbCountdown);
+        etSearch = findViewById(R.id.etSearch);
+        btnImport = findViewById(R.id.btnImport);
+        btnExport = findViewById(R.id.btnExport);
+        tvCountdown = findViewById(R.id.tvCountdown);
         tvRemoteSignalBadge = findViewById(R.id.tvRemoteSignalBadge);
 
         viewFocusLine = findViewById(R.id.viewFocusLine);
@@ -243,6 +282,7 @@ public class MainActivity extends AppCompatActivity {
         showFocusLine = sp.getBoolean(KEY_FOCUS_LINE, true);
         isAlignLeft = sp.getBoolean(KEY_ALIGN_LEFT, false);
         isVoiceFollow = sp.getBoolean(KEY_VOICE_FOLLOW, false);
+        countdownEnabled = sp.getBoolean(KEY_COUNTDOWN, false);
 
         seekSpeed.setProgress(currentSpeed);
         tvSpeedValue.setText(currentSpeed + " px/s");
@@ -254,6 +294,7 @@ public class MainActivity extends AppCompatActivity {
         cbMirror.setChecked(isMirror);
         cbFocusLine.setChecked(showFocusLine);
         cbVoiceFollow.setChecked(isVoiceFollow);
+        cbCountdown.setChecked(countdownEnabled);
 
         drafts.clear();
         String json = sp.getString(KEY_DRAFTS_JSON, "");
@@ -265,7 +306,8 @@ public class MainActivity extends AppCompatActivity {
                     drafts.add(new Draft(
                             obj.optString("id", UUID.randomUUID().toString()),
                             obj.optString("title", "文档" + (i + 1)),
-                            obj.optString("content", "")
+                            obj.optString("content", ""),
+                            obj.optBoolean("pinned", false)
                     ));
                 }
             } catch (Exception ignored) {}
@@ -285,6 +327,7 @@ public class MainActivity extends AppCompatActivity {
                 obj.put("id", d.id);
                 obj.put("title", d.title);
                 obj.put("content", d.content);
+                obj.put("pinned", d.pinned);
                 arr.put(obj);
             }
             getSharedPreferences(PREF_NAME, MODE_PRIVATE)
@@ -302,6 +345,7 @@ public class MainActivity extends AppCompatActivity {
                 .putBoolean(KEY_FOCUS_LINE, showFocusLine)
                 .putBoolean(KEY_ALIGN_LEFT, isAlignLeft)
                 .putBoolean(KEY_VOICE_FOLLOW, isVoiceFollow)
+                .putBoolean(KEY_COUNTDOWN, countdownEnabled)
                 .apply();
     }
 
@@ -311,15 +355,25 @@ public class MainActivity extends AppCompatActivity {
 
     private void renderDraftList() {
         draftListContainer.removeAllViews();
-        tvDraftCount.setText("共 " + drafts.size() + " 篇提词文稿");
+
+        String q = currentQuery == null ? "" : currentQuery.trim().toLowerCase(Locale.getDefault());
+        List<Draft> visible = new ArrayList<>();
+        for (Draft d : drafts) {
+            String t = d.title.toLowerCase(Locale.getDefault());
+            String c = d.content.toLowerCase(Locale.getDefault());
+            if (q.isEmpty() || t.contains(q) || c.contains(q)) visible.add(d);
+        }
+        // 置顶在前；Collections.sort 为稳定排序，保持未置顶项原有相对顺序
+        Collections.sort(visible, (a, b) -> Boolean.compare(b.pinned, a.pinned));
+
+        tvDraftCount.setText("共 " + drafts.size() + " 篇提词文稿" + (q.isEmpty() ? "" : " · 筛选 " + visible.size() + " 篇"));
 
         float density = getResources().getDisplayMetrics().density;
         int pad = (int) (14 * density);
         int marginBottom = (int) (12 * density);
 
-        for (int i = 0; i < drafts.size(); i++) {
-            final int index = i;
-            Draft draft = drafts.get(i);
+        for (Draft draft : visible) {
+            final int index = drafts.indexOf(draft);
 
             LinearLayout card = new LinearLayout(this);
             card.setOrientation(LinearLayout.VERTICAL);
@@ -345,7 +399,7 @@ public class MainActivity extends AppCompatActivity {
 
             TextView tvTitle = new TextView(this);
             tvTitle.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-            tvTitle.setText(draft.title.isEmpty() ? "未命名草稿" : draft.title);
+            tvTitle.setText((draft.pinned ? "📌 " : "") + (draft.title.isEmpty() ? "未命名草稿" : draft.title));
             tvTitle.setTextColor(Color.WHITE);
             tvTitle.setTextSize(16f);
             tvTitle.setTypeface(null, android.graphics.Typeface.BOLD);
@@ -400,6 +454,13 @@ public class MainActivity extends AppCompatActivity {
             card.addView(tvMeta);
 
             card.setOnClickListener(v -> openDraftInEditor(index));
+            card.setOnLongClickListener(v -> {
+                draft.pinned = !draft.pinned;
+                saveDrafts();
+                renderDraftList();
+                Toast.makeText(this, draft.pinned ? "已置顶到列表顶部" : "已取消置顶", Toast.LENGTH_SHORT).show();
+                return true;
+            });
             draftListContainer.addView(card);
         }
     }
@@ -503,6 +564,182 @@ public class MainActivity extends AppCompatActivity {
             saveDraftRunnable.run();
             saveDraftRunnable = null;
         }
+    }
+
+    // =========================================================================
+    // 文稿导入 / 导出（系统 SAF，无需存储权限与 FileProvider）
+    // =========================================================================
+
+    private void pickImportFile() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{
+                "text/plain", "text/markdown", "text/x-markdown",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        });
+        startActivityForResult(intent, REQ_IMPORT);
+    }
+
+    private void pickExportFormat() {
+        String content = etScript.getText().toString();
+        if (content.trim().isEmpty()) {
+            Toast.makeText(this, "文稿为空，无可导出内容", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        String[] items = {"TXT 纯文本 (.txt)", "Markdown (.md)", "Word 文档 (.docx)"};
+        new AlertDialog.Builder(this)
+                .setTitle("导出为")
+                .setItems(items, (dialog, which) -> {
+                    pendingExportFormat = which;
+                    createExportDocument(which);
+                })
+                .show();
+    }
+
+    private void createExportDocument(int format) {
+        String title = etDraftTitle.getText().toString().trim();
+        if (title.isEmpty()) title = "提词文稿";
+        String mime;
+        String ext;
+        if (format == EXPORT_DOCX) {
+            mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+            ext = ".docx";
+        } else if (format == EXPORT_MD) {
+            mime = "text/markdown";
+            ext = ".md";
+        } else {
+            mime = "text/plain";
+            ext = ".txt";
+        }
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType(mime);
+        intent.putExtra(Intent.EXTRA_TITLE, title + ext);
+        startActivityForResult(intent, REQ_EXPORT);
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
+        Uri uri = data.getData();
+        if (requestCode == REQ_IMPORT) {
+            importFromUri(uri);
+        } else if (requestCode == REQ_EXPORT) {
+            exportToUri(uri);
+        }
+    }
+
+    private void importFromUri(Uri uri) {
+        String name = queryDisplayName(uri);
+        String lower = name.toLowerCase(Locale.getDefault());
+        String text;
+        try (InputStream in = getContentResolver().openInputStream(uri)) {
+            if (in == null) {
+                Toast.makeText(this, "无法读取所选文件", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            if (lower.endsWith(".docx")) {
+                text = DocxUtils.readTextFromDocx(in);
+            } else {
+                text = DocxUtils.stripMarkdown(DocxUtils.readText(in));
+            }
+        } catch (Exception e) {
+            Toast.makeText(this, "导入失败：文件无法解析", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (text == null || text.trim().isEmpty()) {
+            Toast.makeText(this, "未从文件中读到有效内容", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        isUpdatingEditorFields = true;
+        etScript.setText(text);
+        if (etDraftTitle.getText().toString().trim().isEmpty()) {
+            String base = name;
+            int dot = base.lastIndexOf('.');
+            if (dot > 0) base = base.substring(0, dot);
+            etDraftTitle.setText(base);
+        }
+        isUpdatingEditorFields = false;
+        updateWordCount();
+        scheduleSaveDraft();
+        Toast.makeText(this, "导入成功", Toast.LENGTH_SHORT).show();
+    }
+
+    private void exportToUri(Uri uri) {
+        String content = etScript.getText().toString();
+        String title = etDraftTitle.getText().toString().trim();
+        if (title.isEmpty()) title = "提词文稿";
+        try (OutputStream out = getContentResolver().openOutputStream(uri)) {
+            if (out == null) {
+                Toast.makeText(this, "无法写入所选位置", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            if (pendingExportFormat == EXPORT_DOCX) {
+                DocxUtils.writeDocx(out, title, content);
+            } else if (pendingExportFormat == EXPORT_MD) {
+                String md = "# " + title + "\n\n" + content;
+                out.write(md.getBytes(StandardCharsets.UTF_8));
+            } else {
+                out.write(content.getBytes(StandardCharsets.UTF_8));
+            }
+            out.flush();
+            Toast.makeText(this, "导出成功", Toast.LENGTH_SHORT).show();
+        } catch (Exception e) {
+            Toast.makeText(this, "导出失败：写入出错", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private String queryDisplayName(Uri uri) {
+        String name = null;
+        Cursor cursor = null;
+        try {
+            cursor = getContentResolver().query(uri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null);
+            if (cursor != null && cursor.moveToFirst()) {
+                int idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                if (idx >= 0) name = cursor.getString(idx);
+            }
+        } catch (Exception ignored) {
+        } finally {
+            if (cursor != null) cursor.close();
+        }
+        if (name == null || name.isEmpty()) name = uri.getLastPathSegment();
+        return name == null ? "导入文稿" : name;
+    }
+
+    // =========================================================================
+    // 开拍前 3 秒倒计时
+    // =========================================================================
+
+    private void startCountdownThenPrompter() {
+        countdownRemain = 3;
+        tvCountdown.setVisibility(View.VISIBLE);
+        tvCountdown.setText(String.valueOf(countdownRemain));
+        countdownRunnable = new Runnable() {
+            @Override
+            public void run() {
+                countdownRemain--;
+                if (countdownRemain <= 0) {
+                    tvCountdown.setVisibility(View.GONE);
+                    startPrompter("倒计时结束");
+                } else {
+                    tvCountdown.setText(String.valueOf(countdownRemain));
+                    countdownHandler.postDelayed(this, 1000);
+                }
+            }
+        };
+        countdownHandler.postDelayed(countdownRunnable, 1000);
+    }
+
+    private void cancelCountdown() {
+        if (countdownRunnable != null) {
+            countdownHandler.removeCallbacks(countdownRunnable);
+            countdownRunnable = null;
+        }
+        countdownRemain = 0;
+        if (tvCountdown != null) tvCountdown.setVisibility(View.GONE);
     }
 
     // =========================================================================
@@ -719,6 +956,15 @@ public class MainActivity extends AppCompatActivity {
         findViewById(R.id.btnNewDraft).setOnClickListener(v -> createNewDraft());
         findViewById(R.id.btnBackToDrafts).setOnClickListener(v -> backToDraftList());
 
+        etSearch.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                currentQuery = s.toString();
+                renderDraftList();
+            }
+            @Override public void afterTextChanged(Editable s) {}
+        });
+
         TextWatcher draftWatcher = new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
             @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
@@ -741,6 +987,9 @@ public class MainActivity extends AppCompatActivity {
             etScript.setText("");
             Toast.makeText(this, "已清空文稿", Toast.LENGTH_SHORT).show();
         });
+
+        btnImport.setOnClickListener(v -> pickImportFile());
+        btnExport.setOnClickListener(v -> pickExportFormat());
 
         seekSpeed.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
@@ -775,6 +1024,11 @@ public class MainActivity extends AppCompatActivity {
 
         cbVoiceFollow.setOnCheckedChangeListener((btn, isChecked) -> {
             isVoiceFollow = isChecked;
+            saveSettings();
+        });
+
+        cbCountdown.setOnCheckedChangeListener((btn, isChecked) -> {
+            countdownEnabled = isChecked;
             saveSettings();
         });
 
@@ -970,12 +1224,15 @@ public class MainActivity extends AppCompatActivity {
             btnPrompterPlayPause.setImageResource(android.R.drawable.ic_media_play);
             ensureMicPermissionAndInitVoice();
             showHud("🎤 正在启动 AI 严格跟读...");
+        } else if (countdownEnabled) {
+            startCountdownThenPrompter();
         } else {
             startPrompter("开启提词");
         }
     }
 
     private void exitPrompter() {
+        cancelCountdown();
         pausePrompter("退出提词");
         if (voiceFollower != null) {
             voiceFollower.release();
@@ -1211,10 +1468,12 @@ public class MainActivity extends AppCompatActivity {
         if (cs instanceof Spannable) {
             Spannable sp = (Spannable) cs;
             sp.removeSpan(ktvHighlightSpan);
+            sp.removeSpan(focusSpan);
             int end = Math.min(highlightedIndex, sp.length());
             if (end > 0) {
                 sp.setSpan(ktvHighlightSpan, 0, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
             }
+            applyFocusSpans(sp);
             tvPrompterText.invalidate();
         } else {
             SpannableString ss = new SpannableString(currentPrompterScript);
@@ -1222,7 +1481,29 @@ public class MainActivity extends AppCompatActivity {
             if (end > 0) {
                 ss.setSpan(ktvHighlightSpan, 0, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
             }
+            applyFocusSpans(ss);
             tvPrompterText.setText(ss, TextView.BufferType.SPANNABLE);
+        }
+    }
+
+    /** 扫描《…》区间，把重点词/停顿提醒片段染为橙色（书名号一并高亮提示）。 */
+    private void applyFocusSpans(Spannable sp) {
+        String s = currentPrompterScript;
+        int i = 0;
+        int n = s.length();
+        while (i < n) {
+            if (s.charAt(i) == '《') {
+                int close = s.indexOf('》', i + 1);
+                if (close < 0) break;
+                int spanStart = Math.min(i, sp.length());
+                int spanEnd = Math.min(close + 1, sp.length());
+                if (spanEnd > spanStart) {
+                    sp.setSpan(focusSpan, spanStart, spanEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+                }
+                i = close + 1;
+            } else {
+                i++;
+            }
         }
     }
 
@@ -1351,6 +1632,7 @@ public class MainActivity extends AppCompatActivity {
     protected void onDestroy() {
         super.onDestroy();
         if (saveDraftRunnable != null) saveHandler.removeCallbacks(saveDraftRunnable);
+        cancelCountdown();
         if (mediaSession != null) {
             mediaSession.release();
         }
