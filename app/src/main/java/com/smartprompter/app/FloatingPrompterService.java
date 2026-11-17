@@ -262,15 +262,17 @@ public class FloatingPrompterService extends Service {
             saveFloatPrefs();
         });
         btnFloatAi.setOnClickListener(v -> {
-            isAiOn = !isAiOn;
-            btnFloatAi.setTextColor(Color.parseColor(isAiOn ? "#38BDF8" : "#CBD5E1"));
-            saveFloatPrefs();
             if (isAiOn) {
+                // 关闭跟读（与匀速滚动互斥）
+                closeAiInternal();
+            } else {
+                // 互斥：开启跟读前先停止匀速滚动
+                isAiOn = true;
+                btnFloatAi.setTextColor(Color.parseColor("#38BDF8"));
+                saveFloatPrefs();
                 pauseScrolling();
                 syncFloatHighlightToTopVisibleLine();
                 startVoiceFollow();
-            } else if (voiceFollower != null) {
-                voiceFollower.stopListening();
             }
         });
         floatView.findViewById(R.id.btnFloatOrient).setOnClickListener(v -> {
@@ -426,11 +428,20 @@ public class FloatingPrompterService extends Service {
 
     private void startScrolling() {
         if (isPlaying) return;
+        // 互斥：启动匀速滚动前先关闭 AI 跟读
+        if (isAiOn) closeAiInternal();
         isPlaying = true;
         btnFloatPlay.setText("⏸");
         lastFrameTime = 0L;
         Choreographer.getInstance().removeFrameCallback(frameCallback);
         Choreographer.getInstance().postFrameCallback(frameCallback);
+    }
+
+    private void closeAiInternal() {
+        isAiOn = false;
+        btnFloatAi.setTextColor(Color.parseColor("#CBD5E1"));
+        saveFloatPrefs();
+        if (voiceFollower != null) voiceFollower.stopListening();
     }
 
     private void pauseScrolling() {
@@ -529,7 +540,7 @@ public class FloatingPrompterService extends Service {
                 int line = layout.getLineForOffset(Math.min(highlightedIndex, scriptText.length()));
                 int maxS = Math.max(0, floatTextWrapper.getHeight() - floatScrollContainer.getHeight());
                 currentScrollY = Math.max(0f, Math.min(maxS, layout.getLineTop(line)));
-                floatTextWrapper.animate().translationY(-currentScrollY).setDuration(180).start();
+                floatTextWrapper.setTranslationY(-currentScrollY);
             }
         }
     }
@@ -592,7 +603,7 @@ public class FloatingPrompterService extends Service {
     public void onDestroy() {
         super.onDestroy();
         Choreographer.getInstance().removeFrameCallback(frameCallback);
-        if (voiceFollower != null) voiceFollower.release();
+        if (voiceFollower != null) { voiceFollower.release(); voiceFollower = null; }
         if (mediaSession != null) mediaSession.release();
         if (floatView != null && windowManager != null) {
             try { windowManager.removeView(floatView); } catch (Exception ignored) {}
