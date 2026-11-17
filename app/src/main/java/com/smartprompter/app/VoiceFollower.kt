@@ -37,6 +37,22 @@ class VoiceFollower(
     private var workerThread: Thread? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    // 主线程合并回调：工作线程先把增量文本累积到 pendingDelta，
+    // 主线程只调度一个 Runnable 一次性取走，避免消息队列随录制时长积压。
+    private val pendingDelta = StringBuilder()
+    @Volatile
+    private var dispatchScheduled = false
+    private val dispatchRunnable = Runnable {
+        dispatchScheduled = false
+        val text: String
+        synchronized(pendingDelta) {
+            if (pendingDelta.isEmpty()) return@Runnable
+            text = pendingDelta.toString()
+            pendingDelta.setLength(0)
+        }
+        if (wantListening) listener.onNewSpokenText(text)
+    }
+
     fun initAndStart() {
         wantListening = true
         if (recognizer != null) {
@@ -80,80 +96,124 @@ class VoiceFollower(
 
     @SuppressLint("MissingPermission")
     private fun startListeningInternal() {
-        if (isRunning || !wantListening) return
-        val rec = recognizer ?: return
-        val sampleRate = 16000
-        val minBuf = AudioRecord.getMinBufferSize(
-            sampleRate,
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT
-        )
-        val bufferSize = maxOf(minBuf * 2, sampleRate / 5 * 2)
+        synchronized(this) {
+            if (isRunning || !wantListening) return
+            val rec = recognizer ?: return
 
-        audioRecord = AudioRecord(
-            MediaRecorder.AudioSource.MIC,
-            sampleRate,
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-            bufferSize
-        )
-        if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
-            mainHandler.post { listener.onError("麦克风初始化失败") }
-            return
-        }
+            // 确保上一个工作线程已完全退出，避免重复创建线程叠加
+            workerThread?.let { old ->
+                try { old.join(300) } catch (_: Exception) {}
+            }
 
-        isRunning = true
-        audioRecord?.startRecording()
+            val sampleRate = 16000
+            val minBuf = AudioRecord.getMinBufferSize(
+                sampleRate,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT
+            )
+            val bufferSize = maxOf(minBuf * 2, sampleRate / 5 * 2)
 
-        workerThread = Thread {
-            val stream: OnlineStream = rec.createStream()
-            val shortBuf = ShortArray(1600)
-            val floatBuf = FloatArray(1600) // Pre-allocated: zero GC churn
-            var lastLength = 0
+            val record = try {
+                AudioRecord(
+                    MediaRecorder.AudioSource.MIC,
+                    sampleRate,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    bufferSize
+                )
+            } catch (e: Throwable) {
+                mainHandler.post { listener.onError("麦克风初始化失败: ${e.message}") }
+                return
+            }
 
-            while (isRunning) {
-                val read = audioRecord?.read(shortBuf, 0, shortBuf.size) ?: 0
-                if (read > 0) {
-                    for (i in 0 until read) {
-                        floatBuf[i] = shortBuf[i] / 32768.0f
+            if (record.state != AudioRecord.STATE_INITIALIZED) {
+                try { record.release() } catch (_: Exception) {}
+                mainHandler.post { listener.onError("麦克风初始化失败") }
+                return
+            }
+
+            audioRecord = record
+            isRunning = true
+            record.startRecording()
+
+            workerThread = Thread {
+                val stream: OnlineStream = rec.createStream()
+                try {
+                    val shortBuf = ShortArray(1600)
+                    val floatBuf = FloatArray(1600) // Pre-allocated: zero GC churn
+                    var lastLength = 0
+
+                    while (isRunning) {
+                        val read = try {
+                            audioRecord?.read(shortBuf, 0, shortBuf.size) ?: -1
+                        } catch (e: Throwable) {
+                            break
+                        }
+                        if (read > 0) {
+                            for (i in 0 until read) {
+                                floatBuf[i] = shortBuf[i] / 32768.0f
+                            }
+                            val slice = if (read == floatBuf.size) floatBuf else floatBuf.copyOf(read)
+                            stream.acceptWaveform(slice, sampleRate)
+                            while (rec.isReady(stream)) {
+                                rec.decode(stream)
+                            }
+                            val text = rec.getResult(stream).text
+                            if (text.length > lastLength) {
+                                val delta = text.substring(lastLength)
+                                lastLength = text.length
+                                enqueueDelta(delta)
+                            }
+                            if (rec.isEndpoint(stream)) {
+                                rec.reset(stream)
+                                lastLength = 0
+                            }
+                        } else if (read < 0) {
+                            break
+                        }
                     }
-                    val slice = if (read == floatBuf.size) floatBuf else floatBuf.copyOf(read)
-                    stream.acceptWaveform(slice, sampleRate)
-                    while (rec.isReady(stream)) {
-                        rec.decode(stream)
-                    }
-                    val text = rec.getResult(stream).text
-                    if (text.length > lastLength) {
-                        val delta = text.substring(lastLength)
-                        lastLength = text.length
-                        mainHandler.post { listener.onNewSpokenText(delta) }
-                    }
-                    if (rec.isEndpoint(stream)) {
-                        rec.reset(stream)
-                        lastLength = 0
-                    }
+                } catch (e: Throwable) {
+                    mainHandler.post { listener.onError("语音识别异常: ${e.message}") }
+                } finally {
+                    try { stream.release() } catch (_: Exception) {}
                 }
             }
-            stream.release()
+            workerThread?.start()
         }
-        workerThread?.start()
+    }
+
+    private fun enqueueDelta(delta: String) {
+        synchronized(pendingDelta) {
+            pendingDelta.append(delta)
+        }
+        if (!dispatchScheduled) {
+            dispatchScheduled = true
+            mainHandler.post(dispatchRunnable)
+        }
     }
 
     fun stopListening() {
         wantListening = false
         isRunning = false
-        try {
-            audioRecord?.stop()
-            audioRecord?.release()
-        } catch (_: Exception) {}
+        try { audioRecord?.stop() } catch (_: Exception) {}
+        try { audioRecord?.release() } catch (_: Exception) {}
         audioRecord = null
+
+        // 等待旧工作线程退出并清空引用，杜绝线程泄漏与重复创建
+        val t = workerThread
+        workerThread = null
+        if (t != null && t.isAlive) {
+            try { t.join(500) } catch (_: Exception) {}
+        }
+
+        mainHandler.removeCallbacks(dispatchRunnable)
+        dispatchScheduled = false
+        synchronized(pendingDelta) { pendingDelta.setLength(0) }
     }
 
     fun release() {
         stopListening()
-        try {
-            recognizer?.release()
-        } catch (_: Exception) {}
+        try { recognizer?.release() } catch (_: Exception) {}
         recognizer = null
     }
 }
