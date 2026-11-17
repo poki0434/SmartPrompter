@@ -79,6 +79,7 @@ public class FloatingPrompterService extends Service {
     private boolean isMirror = false;
     private boolean isAiOn = false;
     private final ForegroundColorSpan ktvSpan = new ForegroundColorSpan(Color.parseColor("#FACC15"));
+    private final ForegroundColorSpan focusSpan = new ForegroundColorSpan(Color.parseColor("#FB923C"));
     private boolean isLocked = false;
 
     private float currentScrollY = 0f;
@@ -574,14 +575,37 @@ public class FloatingPrompterService extends Service {
         if (cs instanceof Spannable && cs.toString().equals(scriptText)) {
             Spannable sp = (Spannable) cs;
             sp.removeSpan(ktvSpan);
+            sp.removeSpan(focusSpan);
             int end = Math.min(highlightedIndex, sp.length());
             if (end > 0) sp.setSpan(ktvSpan, 0, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+            applyFocusSpans(sp);
             tvFloatText.invalidate();
         } else {
             SpannableString ss = new SpannableString(scriptText);
             int end = Math.min(highlightedIndex, scriptText.length());
             if (end > 0) ss.setSpan(ktvSpan, 0, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+            applyFocusSpans(ss);
             tvFloatText.setText(ss, TextView.BufferType.SPANNABLE);
+        }
+    }
+
+    private void applyFocusSpans(Spannable sp) {
+        String s = scriptText;
+        int i = 0;
+        int n = s.length();
+        while (i < n) {
+            if (s.charAt(i) == '《') {
+                int close = s.indexOf('》', i + 1);
+                if (close < 0) break;
+                int spanStart = Math.min(i, sp.length());
+                int spanEnd = Math.min(close + 1, sp.length());
+                if (spanEnd > spanStart) {
+                    sp.setSpan(focusSpan, spanStart, spanEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+                }
+                i = close + 1;
+            } else {
+                i++;
+            }
         }
     }
 
