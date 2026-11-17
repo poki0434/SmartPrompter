@@ -176,6 +176,10 @@ public class MainActivity extends AppCompatActivity {
 
     private final Handler hudHandler = new Handler(Looper.getMainLooper());
 
+    // 草稿防抖存盘：输入时延时批量落盘，避免每敲一键全量序列化
+    private final Handler saveHandler = new Handler(Looper.getMainLooper());
+    private Runnable saveDraftRunnable;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -462,6 +466,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void finishBackToDraftList() {
+        flushSaveDraft();
         renderDraftList();
         layoutEditor.setVisibility(View.GONE);
         layoutDraftList.setVisibility(View.VISIBLE);
@@ -484,6 +489,20 @@ public class MainActivity extends AppCompatActivity {
         originalDraftTitle = title;
         originalDraftContent = content;
         saveDrafts();
+    }
+
+    private void scheduleSaveDraft() {
+        if (saveDraftRunnable != null) saveHandler.removeCallbacks(saveDraftRunnable);
+        saveDraftRunnable = this::saveCurrentDraftFromEditor;
+        saveHandler.postDelayed(saveDraftRunnable, 500);
+    }
+
+    private void flushSaveDraft() {
+        if (saveDraftRunnable != null) {
+            saveHandler.removeCallbacks(saveDraftRunnable);
+            saveDraftRunnable.run();
+            saveDraftRunnable = null;
+        }
     }
 
     // =========================================================================
@@ -705,7 +724,7 @@ public class MainActivity extends AppCompatActivity {
             @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
                 if (!isUpdatingEditorFields) {
                     updateWordCount();
-                    saveCurrentDraftFromEditor();
+                    scheduleSaveDraft();
                 }
             }
             @Override public void afterTextChanged(Editable s) {}
@@ -786,20 +805,20 @@ public class MainActivity extends AppCompatActivity {
         });
 
         btnPrompterAi.setOnClickListener(v -> {
-            isVoiceFollow = !isVoiceFollow;
-            cbVoiceFollow.setChecked(isVoiceFollow);
-            saveSettings();
-            updateAiButtonStyle();
             if (isVoiceFollow) {
-                // 开启AI跟读时自动暂停匀速滚动
-                isPlaying = true;
+                // 关闭跟读（与匀速滚动互斥）
+                closeVoiceFollowInternal();
+                showHud("🎤 AI跟读: 关");
+            } else {
+                // 互斥：开启跟读前先停止匀速滚动
+                isVoiceFollow = true;
+                cbVoiceFollow.setChecked(true);
+                saveSettings();
+                updateAiButtonStyle();
                 pausePrompter("切换AI跟读");
                 syncHighlightedIndexToTopVisibleLine();
                 ensureMicPermissionAndInitVoice();
                 showHud("🎤 AI跟读: 开 (已暂停自动滚动)");
-            } else {
-                if (voiceFollower != null) voiceFollower.stopListening();
-                showHud("🎤 AI跟读: 关");
             }
             wakeFloatingBar();
         });
@@ -872,6 +891,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void launchFloatingPrompter() {
+        flushSaveDraft();
         saveCurrentDraftFromEditor();
         saveSettings();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
@@ -892,6 +912,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void openPrompter() {
+        flushSaveDraft();
         saveCurrentDraftFromEditor();
         isPrompterActive = true;
         saveSettings();
@@ -905,8 +926,8 @@ public class MainActivity extends AppCompatActivity {
         }
         if (mediaSession != null) {
             mediaSession.setActive(true);
-            updatePlaybackState(PlaybackStateCompat.STATE_PLAYING);
-            }
+            updatePlaybackState(PlaybackStateCompat.STATE_PAUSED);
+        }
 
         isLandscape = true;
         setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
@@ -956,7 +977,10 @@ public class MainActivity extends AppCompatActivity {
 
     private void exitPrompter() {
         pausePrompter("退出提词");
-        if (voiceFollower != null) voiceFollower.stopListening();
+        if (voiceFollower != null) {
+            voiceFollower.release();
+            voiceFollower = null;
+        }
         isPrompterActive = false;
 
         if (audioManager != null && savedOriginalVolume != -1) {
@@ -1014,20 +1038,33 @@ public class MainActivity extends AppCompatActivity {
 
     private void startPrompter(String source) {
         if (isPlaying) return;
+        // 互斥：启动匀速滚动前先关闭 AI 跟读并释放语音引擎
+        if (isVoiceFollow) closeVoiceFollowInternal();
+        if (voiceFollower != null) {
+            voiceFollower.release();
+            voiceFollower = null;
+        }
         isPlaying = true;
         updatePlaybackState(PlaybackStateCompat.STATE_PLAYING);
         lastFrameTime = 0L;
         Choreographer.getInstance().removeFrameCallback(frameCallback);
-        if (voiceFollower != null) voiceFollower.release();
         Choreographer.getInstance().postFrameCallback(frameCallback);
         btnPrompterPlayPause.setImageResource(android.R.drawable.ic_media_pause);
         showHud("▶ 开始滚动 (" + source + ")");
     }
 
+    private void closeVoiceFollowInternal() {
+        isVoiceFollow = false;
+        cbVoiceFollow.setChecked(false);
+        updateAiButtonStyle();
+        saveSettings();
+        if (voiceFollower != null) voiceFollower.stopListening();
+    }
+
     private void pausePrompter(String source) {
         if (!isPlaying) return;
         isPlaying = false;
-        updatePlaybackState(PlaybackStateCompat.STATE_PLAYING);
+        updatePlaybackState(PlaybackStateCompat.STATE_PAUSED);
         Choreographer.getInstance().removeFrameCallback(frameCallback);
         btnPrompterPlayPause.setImageResource(android.R.drawable.ic_media_play);
         showHud("⏸ 暂停滚动 (" + source + ")");
@@ -1209,7 +1246,7 @@ public class MainActivity extends AppCompatActivity {
         int lineTop = layout.getLineTop(line);
         int maxScroll = Math.max(0, framePrompterContent.getHeight() - prompterScrollContainer.getHeight());
         currentScrollY = Math.max(0f, Math.min(maxScroll, lineTop));
-        framePrompterContent.animate().translationY(-currentScrollY).setDuration(180).start();
+        framePrompterContent.setTranslationY(-currentScrollY);
     }
 
     private void adjustFontSize(int delta) {
@@ -1285,16 +1322,9 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void wakeFloatingBar() {
+        // 提词进行中工具栏常驻，不自动隐藏；透明度在布局中调为半透明
         layoutFloatingBar.setVisibility(View.VISIBLE);
-        hudHandler.removeCallbacks(hideFloatingBarRunnable);
-        hudHandler.postDelayed(hideFloatingBarRunnable, 4000);
     }
-
-    private final Runnable hideFloatingBarRunnable = () -> {
-        if (isPlaying && isPrompterActive) {
-            layoutFloatingBar.setVisibility(View.GONE);
-        }
-    };
 
     @Override
     protected void onResume() {
@@ -1302,7 +1332,7 @@ public class MainActivity extends AppCompatActivity {
         requestExclusiveAudioFocus();
         if (mediaSession != null) {
             mediaSession.setActive(true);
-            updatePlaybackState(PlaybackStateCompat.STATE_PLAYING);
+            updatePlaybackState(isPlaying ? PlaybackStateCompat.STATE_PLAYING : PlaybackStateCompat.STATE_PAUSED);
         }
     }
 
@@ -1320,6 +1350,7 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        if (saveDraftRunnable != null) saveHandler.removeCallbacks(saveDraftRunnable);
         if (mediaSession != null) {
             mediaSession.release();
         }
