@@ -52,6 +52,21 @@
                 android:backgroundTint="#4F46E5" />
         </LinearLayout>
 
+        <EditText
+            android:id="@+id/etSearch"
+            android:layout_width="match_parent"
+            android:layout_height="40dp"
+            android:background="#1E293B"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:layout_marginBottom="10dp"
+            android:hint="搜索草稿标题或内容..."
+            android:textColor="#F8FAFC"
+            android:textColorHint="#64748B"
+            android:textSize="14sp"
+            android:inputType="text"
+            android:singleLine="true" />
+
         <ScrollView
             android:layout_width="match_parent"
             android:layout_height="0dp"
@@ -202,6 +217,24 @@
                     android:text="清空"
                     android:textColor="#F43F5E"
                     android:textSize="11sp" />
+
+                <Button
+                    android:id="@+id/btnImport"
+                    style="?android:attr/borderlessButtonStyle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="32dp"
+                    android:text="导入"
+                    android:textColor="#0EA5E9"
+                    android:textSize="11sp" />
+
+                <Button
+                    android:id="@+id/btnExport"
+                    style="?android:attr/borderlessButtonStyle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="32dp"
+                    android:text="导出"
+                    android:textColor="#818CF8"
+                    android:textSize="11sp" />
             </LinearLayout>
 
             <EditText
@@ -320,6 +353,15 @@
                     android:textColor="#38BDF8"
                     android:textSize="12sp"
                     android:layout_marginStart="12dp" />
+
+                <CheckBox
+                    android:id="@+id/cbCountdown"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="开拍3秒倒计时"
+                    android:textColor="#FBBF24"
+                    android:textSize="12sp"
+                    android:layout_marginStart="12dp" />
             </LinearLayout>
         </LinearLayout>
     </LinearLayout>
@@ -381,6 +423,16 @@
             android:paddingBottom="8dp"
             android:textColor="#818CF8"
             android:textSize="14sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/tvCountdown"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:textColor="#FFFFFF"
+            android:textSize="96sp"
             android:textStyle="bold"
             android:visibility="gone" />
 
