@@ -1083,7 +1083,7 @@ public class MainActivity extends AppCompatActivity {
                 setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
                 showHud("📱 已切换为横屏");
             } else {
-                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT);
                 showHud("📱 已切换为竖屏");
             }
             updateFloatingBarSpacing();
@@ -1508,14 +1508,18 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
-     * 当用户把前面的行划出屏幕顶部时，自动把 AI 识别起点同步到当前屏幕显示的第一行
+     * 把 AI 识别起点同步到当前参考线（屏幕顶部 200dp）所在的那一行，
+     * 支持提词中途任意位置开启跟读，而不是强制从第一句开始。
      */
     private void syncHighlightedIndexToTopVisibleLine() {
         Layout layout = tvPrompterText.getLayout();
         if (layout == null || currentPrompterScript.isEmpty()) return;
-        int yInTextView = Math.max(0, Math.round(currentScrollY) - tvPrompterText.getTop());
-        int firstVisibleLine = layout.getLineForVertical(yInTextView);
-        highlightedIndex = Math.min(layout.getLineStart(firstVisibleLine), currentPrompterScript.length());
+        float density = getResources().getDisplayMetrics().density;
+        float focusLinePx = 200f * density;
+        int yInTextView = Math.max(0, Math.round(focusLinePx + currentScrollY - tvPrompterText.getTop()));
+        int line = layout.getLineForVertical(yInTextView);
+        int start = Math.min(layout.getLineStart(line), currentPrompterScript.length());
+        highlightedIndex = skipPunctuation(start);
         renderKtvText();
     }
 
