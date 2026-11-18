@@ -353,6 +353,15 @@
                     android:text="倒计时"
                     android:textColor="#CBD5E1"
                     android:textSize="12sp" />
+
+                <CheckBox
+                    android:id="@+id/cbBtMic"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_columnWeight="1"
+                    android:text="蓝牙收音"
+                    android:textColor="#CBD5E1"
+                    android:textSize="12sp" />
             </GridLayout>
         </LinearLayout>
     </LinearLayout>
@@ -551,6 +560,18 @@
                     android:textColor="#CBD5E1"
                     android:textSize="12sp"
                     android:textStyle="bold" />
+
+                <Button
+                    android:id="@+id/btnPrompterMic"
+                    style="?android:attr/borderlessButtonStyle"
+                    android:layout_width="38dp"
+                    android:layout_height="34dp"
+                    android:minWidth="0dp"
+                    android:padding="0dp"
+                    android:text="📱麦"
+                    android:textAllCaps="false"
+                    android:textColor="#CBD5E1"
+                    android:textSize="11sp" />
 
                 <ImageButton
                     android:id="@+id/btnPrompterOrientation"

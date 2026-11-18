@@ -2,9 +2,12 @@ package com.smartprompter.app
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import com.k2fsa.sherpa.onnx.FeatureConfig
@@ -13,11 +16,18 @@ import com.k2fsa.sherpa.onnx.OnlineRecognizer
 import com.k2fsa.sherpa.onnx.OnlineRecognizerConfig
 import com.k2fsa.sherpa.onnx.OnlineStream
 import com.k2fsa.sherpa.onnx.OnlineTransducerModelConfig
+import kotlin.math.abs
+import kotlin.math.tanh
 
 class VoiceFollower(
     private val context: Context,
     private val listener: Listener
 ) {
+    enum class MicSource {
+        PHONE_MIC,
+        BLUETOOTH_MIC
+    }
+
     interface Listener {
         fun onModelReady()
         fun onNewSpokenText(deltaText: String)
@@ -31,6 +41,8 @@ class VoiceFollower(
     }
 
     @Volatile
+    private var micSource: MicSource = MicSource.PHONE_MIC
+    @Volatile
     private var isModelLoading = false
     @Volatile
     private var wantListening = false
@@ -40,6 +52,17 @@ class VoiceFollower(
     private var audioRecord: AudioRecord? = null
     private var workerThread: Thread? = null
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    fun setMicSource(source: MicSource) {
+        if (this.micSource == source) return
+        this.micSource = source
+        if (isRunning || wantListening) {
+            stopListening()
+            initAndStart()
+        }
+    }
+
+    fun getMicSource(): MicSource = micSource
 
     fun initAndStart() {
         wantListening = true
@@ -89,6 +112,50 @@ class VoiceFollower(
         }.start()
     }
 
+    private fun configureAudioRouting(ar: AudioRecord) {
+        val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        try {
+            if (micSource == MicSource.PHONE_MIC) {
+                try {
+                    am.stopBluetoothSco()
+                    am.isBluetoothScoOn = false
+                    am.mode = AudioManager.MODE_NORMAL
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        am.clearCommunicationDevice()
+                    }
+                } catch (_: Exception) {}
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    val inputs = am.getDevices(AudioManager.GET_DEVICES_INPUTS)
+                    val phoneMic = inputs.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
+                    if (phoneMic != null) {
+                        ar.setPreferredDevice(phoneMic)
+                    }
+                }
+            } else {
+                var btDevice: AudioDeviceInfo? = null
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    val inputs = am.getDevices(AudioManager.GET_DEVICES_INPUTS)
+                    btDevice = inputs.firstOrNull {
+                        it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                            (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && it.type == AudioDeviceInfo.TYPE_BLE_HEADSET)
+                    }
+                }
+                try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && btDevice != null) {
+                        am.setCommunicationDevice(btDevice)
+                    } else {
+                        am.mode = AudioManager.MODE_IN_COMMUNICATION
+                        am.startBluetoothSco()
+                        am.isBluetoothScoOn = true
+                    }
+                } catch (_: Exception) {}
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && btDevice != null) {
+                    ar.setPreferredDevice(btDevice)
+                }
+            }
+        } catch (_: Exception) {}
+    }
+
     @SuppressLint("MissingPermission")
     private fun startListeningInternal() {
         if (isRunning || !wantListening) return
@@ -101,8 +168,8 @@ class VoiceFollower(
         )
         val bufferSize = maxOf(minBuf * 2, sampleRate / 5 * 2)
 
-        val ar = AudioRecord(
-            MediaRecorder.AudioSource.MIC,
+        var ar = AudioRecord(
+            MediaRecorder.AudioSource.VOICE_RECOGNITION,
             sampleRate,
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT,
@@ -110,9 +177,20 @@ class VoiceFollower(
         )
         if (ar.state != AudioRecord.STATE_INITIALIZED) {
             ar.release()
+            ar = AudioRecord(
+                MediaRecorder.AudioSource.MIC,
+                sampleRate,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+                bufferSize
+            )
+        }
+        if (ar.state != AudioRecord.STATE_INITIALIZED) {
+            ar.release()
             mainHandler.post { listener.onError("麦克风初始化失败") }
             return
         }
+        configureAudioRouting(ar)
         audioRecord = ar
         isRunning = true
         ar.startRecording()
@@ -128,8 +206,16 @@ class VoiceFollower(
                 while (isRunning) {
                     val read = ar.read(shortBuf, 0, shortBuf.size)
                     if (read > 0 && isRunning) {
+                        // 高灵敏度自适应软增益：极小声说话也能清晰放大并防止爆音
+                        var peak = 0f
                         for (i in 0 until read) {
-                            floatBuf[i] = shortBuf[i] / 32768.0f
+                            val v = abs(shortBuf[i] / 32768.0f)
+                            if (v > peak) peak = v
+                        }
+                        val gain = if (peak > 0.0015f) minOf(8.0f, 0.55f / peak) else 6.0f
+                        for (i in 0 until read) {
+                            val boosted = (shortBuf[i] / 32768.0f) * gain
+                            floatBuf[i] = if (abs(boosted) > 0.85f) tanh(boosted.toDouble()).toFloat() else boosted
                         }
                         val slice = if (read == floatBuf.size) floatBuf else floatBuf.copyOf(read)
                         stream!!.acceptWaveform(slice, sampleRate)
@@ -165,6 +251,14 @@ class VoiceFollower(
                 try {
                     ar.release()
                 } catch (_: Exception) {}
+                if (micSource == MicSource.BLUETOOTH_MIC) {
+                    try {
+                        val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+                        am?.stopBluetoothSco()
+                        am?.isBluetoothScoOn = false
+                        am?.mode = AudioManager.MODE_NORMAL
+                    } catch (_: Exception) {}
+                }
             }
         }
         workerThread = t
@@ -186,6 +280,5 @@ class VoiceFollower(
 
     fun release() {
         stopListening()
-        // 保留进程级共享模型避免反复释放/重载引发原生内存抖动与闪退
     }
 }

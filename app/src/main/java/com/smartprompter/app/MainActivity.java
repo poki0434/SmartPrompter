@@ -122,6 +122,7 @@ public class MainActivity extends AppCompatActivity {
     private CheckBox cbMirror;
     private CheckBox cbFocusLine;
     private CheckBox cbVoiceFollow;
+    private CheckBox cbBtMic;
     private TextView tvRemoteSignalBadge;
 
     // 三级：提词控件
@@ -135,6 +136,7 @@ public class MainActivity extends AppCompatActivity {
     private ImageButton btnPrompterMirror;
     private ImageButton btnPrompterAlign;
     private Button btnPrompterAi;
+    private Button btnPrompterMic;
     private ImageButton btnPrompterOrientation;
     private ImageButton btnPrompterPlayPause;
     private TextView tvPrompterSpeedIndicator;
@@ -153,6 +155,7 @@ public class MainActivity extends AppCompatActivity {
     private boolean showFocusLine = true;
     private boolean isAlignLeft = false;
     private boolean isVoiceFollow = false;
+    private boolean useBluetoothMic = false;
     private int highlightedIndex = 0;
     private final ForegroundColorSpan ktvHighlightSpan = new ForegroundColorSpan(Color.parseColor("#FACC15"));
     private String currentPrompterScript = "";
@@ -244,6 +247,7 @@ public class MainActivity extends AppCompatActivity {
         cbMirror = findViewById(R.id.cbMirror);
         cbFocusLine = findViewById(R.id.cbFocusLine);
         cbVoiceFollow = findViewById(R.id.cbVoiceFollow);
+        cbBtMic = findViewById(R.id.cbBtMic);
         tvRemoteSignalBadge = findViewById(R.id.tvRemoteSignalBadge);
 
         viewFocusLine = findViewById(R.id.viewFocusLine);
@@ -261,6 +265,7 @@ public class MainActivity extends AppCompatActivity {
         btnPrompterMirror = findViewById(R.id.btnPrompterMirror);
         btnPrompterAlign = findViewById(R.id.btnPrompterAlign);
         btnPrompterAi = findViewById(R.id.btnPrompterAi);
+        btnPrompterMic = findViewById(R.id.btnPrompterMic);
         btnPrompterOrientation = findViewById(R.id.btnPrompterOrientation);
         btnPrompterPlayPause = findViewById(R.id.btnPrompterPlayPause);
         tvPrompterSpeedIndicator = findViewById(R.id.tvPrompterSpeedIndicator);
@@ -292,6 +297,7 @@ public class MainActivity extends AppCompatActivity {
         cbMirror.setChecked(isMirror);
         cbFocusLine.setChecked(showFocusLine);
         cbVoiceFollow.setChecked(isVoiceFollow);
+        cbBtMic.setChecked(useBluetoothMic);
 
         drafts.clear();
         String json = sp.getString(KEY_DRAFTS_JSON, "");
@@ -846,6 +852,18 @@ public class MainActivity extends AppCompatActivity {
             wakeFloatingBar();
         });
 
+        btnPrompterMic.setOnClickListener(v -> {
+            useBluetoothMic = !useBluetoothMic;
+            cbBtMic.setChecked(useBluetoothMic);
+            saveSettings();
+            syncToolbarHighlights();
+            if (voiceFollower != null) {
+                voiceFollower.setMicSource(useBluetoothMic ? VoiceFollower.MicSource.BLUETOOTH_MIC : VoiceFollower.MicSource.PHONE_MIC);
+            }
+            showHud(useBluetoothMic ? "🎧 已切换为蓝牙耳机收音" : "📱 已切换为手机麦克风收音");
+            wakeFloatingBar();
+        });
+
         btnPrompterOrientation.setOnClickListener(v -> {
             isLandscape = !isLandscape;
             if (isLandscape) {
@@ -1158,6 +1176,7 @@ public class MainActivity extends AppCompatActivity {
                 }
             });
         }
+        voiceFollower.setMicSource(useBluetoothMic ? VoiceFollower.MicSource.BLUETOOTH_MIC : VoiceFollower.MicSource.PHONE_MIC);
         voiceFollower.initAndStart();
     }
 
@@ -1530,16 +1549,23 @@ public class MainActivity extends AppCompatActivity {
             float deltaSeconds = (frameTimeNanos - lastFrameTime) / 1_000_000_000.0f;
             lastFrameTime = frameTimeNanos;
 
+            if (prompterRecyclerView.getChildCount() == 0 || prompterRecyclerView.getHeight() == 0) {
+                Choreographer.getInstance().postFrameCallback(this);
+                return;
+            }
+
+            int dy = 0;
             if (deltaSeconds > 0f && deltaSeconds < 0.1f) {
                 scrollRemainder += currentSpeed * deltaSeconds;
-                int dy = (int) scrollRemainder;
+                dy = (int) scrollRemainder;
                 if (dy != 0) {
                     scrollRemainder -= dy;
                     prompterRecyclerView.scrollBy(0, dy);
                 }
             }
 
-            if (!prompterRecyclerView.canScrollVertically(1)) {
+            if (dy > 0 && prompterRecyclerView.computeVerticalScrollRange() > prompterRecyclerView.getHeight()
+                    && !prompterRecyclerView.canScrollVertically(1)) {
                 pausePrompter("台词结束");
                 return;
             }
