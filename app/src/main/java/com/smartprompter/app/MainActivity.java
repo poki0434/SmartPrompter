@@ -46,6 +46,8 @@ import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AlertDialog;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
@@ -94,11 +96,13 @@ public class MainActivity extends AppCompatActivity {
         String id;
         String title;
         String content;
+        boolean pinned;
 
-        Draft(String id, String title, String content) {
+        Draft(String id, String title, String content, boolean pinned) {
             this.id = id;
             this.title = title;
             this.content = content;
+            this.pinned = pinned;
         }
     }
 
@@ -110,6 +114,13 @@ public class MainActivity extends AppCompatActivity {
     // 一级：草稿列表控件
     private LinearLayout draftListContainer;
     private TextView tvDraftCount;
+    private EditText etSearchDrafts;
+    private String searchQuery = "";
+    private CheckBox cbCountdown;
+    private TextView tvCountdownOverlay;
+    private boolean isCountdownEnabled = true;
+    private Draft pendingExportDraft = null;
+    private String pendingExportFormat = "txt";
 
     // 二级：编辑与参数控件
     private EditText etDraftTitle;
@@ -185,6 +196,40 @@ public class MainActivity extends AppCompatActivity {
     private GestureDetector tapGestureDetector;
 
 
+
+    private final ActivityResultLauncher<String[]> importFileLauncher = registerForActivityResult(
+            new ActivityResultContracts.OpenDocument(),
+            uri -> {
+                if (uri == null) return;
+                try {
+                    String fileName = DraftFileHelper.getFileName(getContentResolver(), uri);
+                    String content = DraftFileHelper.readTextFromUri(getContentResolver(), uri, fileName);
+                    String title = DraftFileHelper.stripExtension(fileName);
+                    drafts.add(0, new Draft(UUID.randomUUID().toString(), title, content, false));
+                    sortDraftsByPin();
+                    saveDrafts();
+                    renderDraftList();
+                    Toast.makeText(this, "已导入: " + title, Toast.LENGTH_SHORT).show();
+                } catch (Exception e) {
+                    Toast.makeText(this, "导入失败: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                }
+            }
+    );
+
+    private final ActivityResultLauncher<String> exportFileLauncher = registerForActivityResult(
+            new ActivityResultContracts.CreateDocument("*/*"),
+            uri -> {
+                if (uri == null || pendingExportDraft == null) return;
+                try {
+                    DraftFileHelper.writeExportToUri(getContentResolver(), uri,
+                            pendingExportDraft.title, pendingExportDraft.content, pendingExportFormat);
+                    Toast.makeText(this, "导出成功", Toast.LENGTH_SHORT).show();
+                } catch (Exception e) {
+                    Toast.makeText(this, "导出失败: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                }
+            }
+    );
+
     private final Handler hudHandler = new Handler(Looper.getMainLooper());
 
     @Override
@@ -202,6 +247,7 @@ public class MainActivity extends AppCompatActivity {
         });
         super.onCreate(savedInstanceState);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        force60HzRefreshRate();
         setContentView(R.layout.activity_main);
 
         initViews();
@@ -241,6 +287,9 @@ public class MainActivity extends AppCompatActivity {
 
         draftListContainer = findViewById(R.id.draftListContainer);
         tvDraftCount = findViewById(R.id.tvDraftCount);
+        etSearchDrafts = findViewById(R.id.etSearchDrafts);
+        cbCountdown = findViewById(R.id.cbCountdown);
+        tvCountdownOverlay = findViewById(R.id.tvCountdownOverlay);
 
         etDraftTitle = findViewById(R.id.etDraftTitle);
         etScript = findViewById(R.id.etScript);
@@ -258,9 +307,10 @@ public class MainActivity extends AppCompatActivity {
         viewFocusLine = findViewById(R.id.viewFocusLine);
         prompterRecyclerView = findViewById(R.id.prompterRecyclerView);
         prompterLayoutManager = new LinearLayoutManager(this);
+        prompterLayoutManager.setItemPrefetchEnabled(false);
         prompterRecyclerView.setLayoutManager(prompterLayoutManager);
         prompterRecyclerView.setItemAnimator(null);
-        prompterRecyclerView.setItemViewCacheSize(4);
+        prompterRecyclerView.setItemViewCacheSize(2);
         prompterRecyclerView.setLayerType(View.LAYER_TYPE_NONE, null);
         chunkAdapter = new ChunkAdapter();
         prompterRecyclerView.setAdapter(chunkAdapter);
@@ -318,14 +368,15 @@ public class MainActivity extends AppCompatActivity {
                     drafts.add(new Draft(
                             obj.optString("id", UUID.randomUUID().toString()),
                             obj.optString("title", "文档" + (i + 1)),
-                            obj.optString("content", "")
+                            obj.optString("content", ""),
+                            obj.optBoolean("pinned", false)
                     ));
                 }
             } catch (Exception ignored) {}
         }
 
         if (drafts.isEmpty()) {
-            drafts.add(new Draft(UUID.randomUUID().toString(), "文档1（示例）", DEFAULT_SAMPLE));
+            drafts.add(new Draft(UUID.randomUUID().toString(), "文档1（示例）", DEFAULT_SAMPLE, false));
             saveDrafts();
         }
     }
@@ -338,6 +389,7 @@ public class MainActivity extends AppCompatActivity {
                 obj.put("id", d.id);
                 obj.put("title", d.title);
                 obj.put("content", d.content);
+                obj.put("pinned", d.pinned);
                 arr.put(obj);
             }
             getSharedPreferences(PREF_NAME, MODE_PRIVATE)
@@ -362,9 +414,49 @@ public class MainActivity extends AppCompatActivity {
     // 一级界面：草稿列表渲染与交互
     // =========================================================================
 
+    private void sortDraftsByPin() {
+        drafts.sort((a, b) -> Boolean.compare(b.pinned, a.pinned));
+    }
+
+    private void showDraftActionMenu(int index) {
+        if (index < 0 || index >= drafts.size()) return;
+        Draft d = drafts.get(index);
+        String[] options = {
+                d.pinned ? "取消置顶" : "📌 置顶草稿",
+                "导出为 Word (.docx)",
+                "导出为 Markdown (.md)",
+                "导出为 TXT (.txt)",
+                "删除草稿"
+        };
+        new AlertDialog.Builder(this)
+                .setTitle(d.title.isEmpty() ? "草稿操作" : d.title)
+                .setItems(options, (dialog, which) -> {
+                    if (which == 0) {
+                        d.pinned = !d.pinned;
+                        sortDraftsByPin();
+                        saveDrafts();
+                        renderDraftList();
+                        Toast.makeText(this, d.pinned ? "已置顶" : "已取消置顶", Toast.LENGTH_SHORT).show();
+                    } else if (which == 1 || which == 2 || which == 3) {
+                        pendingExportDraft = d;
+                        pendingExportFormat = which == 1 ? "docx" : (which == 2 ? "md" : "txt");
+                        String safeTitle = (d.title == null || d.title.trim().isEmpty()) ? "提词文稿" : d.title.trim();
+                        exportFileLauncher.launch(safeTitle + "." + pendingExportFormat);
+                    } else if (which == 4) {
+                        drafts.remove(index);
+                        saveDrafts();
+                        renderDraftList();
+                        Toast.makeText(this, "已删除草稿", Toast.LENGTH_SHORT).show();
+                    }
+                })
+                .show();
+    }
+
     private void renderDraftList() {
+        sortDraftsByPin();
         draftListContainer.removeAllViews();
-        tvDraftCount.setText("共 " + drafts.size() + " 篇提词文稿");
+        String q = searchQuery == null ? "" : searchQuery.trim().toLowerCase(Locale.ROOT);
+        int shownCount = 0;
 
         float density = getResources().getDisplayMetrics().density;
         int pad = (int) (14 * density);
@@ -373,6 +465,12 @@ public class MainActivity extends AppCompatActivity {
         for (int i = 0; i < drafts.size(); i++) {
             final int index = i;
             Draft draft = drafts.get(i);
+            if (!q.isEmpty()) {
+                boolean matchTitle = draft.title != null && draft.title.toLowerCase(Locale.ROOT).contains(q);
+                boolean matchBody = draft.content != null && draft.content.toLowerCase(Locale.ROOT).contains(q);
+                if (!matchTitle && !matchBody) continue;
+            }
+            shownCount++;
 
             LinearLayout card = new LinearLayout(this);
             card.setOrientation(LinearLayout.VERTICAL);
@@ -398,7 +496,8 @@ public class MainActivity extends AppCompatActivity {
 
             TextView tvTitle = new TextView(this);
             tvTitle.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-            tvTitle.setText(draft.title.isEmpty() ? "未命名草稿" : draft.title);
+            String baseTitle = draft.title.isEmpty() ? "未命名草稿" : draft.title;
+            tvTitle.setText(draft.pinned ? "📌 " + baseTitle : baseTitle);
             tvTitle.setTextColor(Color.WHITE);
             tvTitle.setTextSize(16f);
             tvTitle.setTypeface(null, android.graphics.Typeface.BOLD);
@@ -508,7 +607,8 @@ public class MainActivity extends AppCompatActivity {
                     .setTitle("保存草稿")
                     .setMessage("内容栏中有未保存的文字，是否保存到草稿列表？")
                     .setPositiveButton("保存", (dialog, which) -> {
-                            finishBackToDraftList();
+                        saveCurrentDraftFromEditor();
+                        finishBackToDraftList();
                     })
                     .setNegativeButton("不保存", (dialog, which) -> finishBackToDraftList())
                     .setNeutralButton("取消", null)
@@ -524,13 +624,21 @@ public class MainActivity extends AppCompatActivity {
         layoutDraftList.setVisibility(View.VISIBLE);
     }
 
+
+    private final Runnable autoSaveRunnable = this::saveCurrentDraftFromEditor;
+
+    private void scheduleAutoSave() {
+        hudHandler.removeCallbacks(autoSaveRunnable);
+        hudHandler.postDelayed(autoSaveRunnable, 800);
+    }
+
     private void saveCurrentDraftFromEditor() {
         String title = etDraftTitle.getText().toString().trim();
         if (title.isEmpty()) title = getTodayDateTitle();
         String content = etScript.getText().toString();
 
         if (isNewUnsavedDraft) {
-            drafts.add(0, new Draft(UUID.randomUUID().toString(), title, content));
+            drafts.add(0, new Draft(UUID.randomUUID().toString(), title, content, false));
             currentDraftIndex = 0;
             isNewUnsavedDraft = false;
         } else if (currentDraftIndex >= 0 && currentDraftIndex < drafts.size()) {
@@ -755,6 +863,39 @@ public class MainActivity extends AppCompatActivity {
 
     private void setupEventListeners() {
         findViewById(R.id.btnNewDraft).setOnClickListener(v -> createNewDraft());
+        findViewById(R.id.btnImportDraft).setOnClickListener(v ->
+                importFileLauncher.launch(new String[]{
+                        "text/plain",
+                        "text/markdown",
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        "*/*"
+                })
+        );
+        if (etSearchDrafts != null) {
+            etSearchDrafts.addTextChangedListener(new TextWatcher() {
+                @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+                @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                    searchQuery = s == null ? "" : s.toString();
+                    renderDraftList();
+                }
+                private boolean isCleaningMd = false;
+            @Override public void afterTextChanged(Editable s) {
+                if (!isCleaningMd && !isUpdatingEditorFields && s != null && DraftFileHelper.hasMarkdownSyntax(s.toString())) {
+                    isCleaningMd = true;
+                    String cleaned = DraftFileHelper.parseMarkdownToPrompter(s.toString());
+                    s.replace(0, s.length(), cleaned);
+                    isCleaningMd = false;
+                    Toast.makeText(MainActivity.this, "已自动识别并转换 Markdown 格式", Toast.LENGTH_SHORT).show();
+                }
+            }
+            });
+        }
+        if (cbCountdown != null) {
+            cbCountdown.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                isCountdownEnabled = isChecked;
+                saveSettings();
+            });
+        }
         findViewById(R.id.btnBackToDrafts).setOnClickListener(v -> backToDraftList());
 
         TextWatcher draftWatcher = new TextWatcher() {
@@ -762,7 +903,7 @@ public class MainActivity extends AppCompatActivity {
             @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
                 if (!isUpdatingEditorFields) {
                     updateWordCount();
-                    saveCurrentDraftFromEditor();
+                    scheduleAutoSave();
                 }
             }
             @Override public void afterTextChanged(Editable s) {}
@@ -832,6 +973,11 @@ public class MainActivity extends AppCompatActivity {
             saveSettings();
             showHud("🪞 镜像(水平+180°): " + (isMirror ? "开" : "关"));
             wakeFloatingBar();
+        hudHandler.removeCallbacks(countdownTickRunnable);
+        if (tvCountdownOverlay != null) tvCountdownOverlay.setVisibility(View.GONE);
+        hudHandler.removeCallbacks(autoSaveRunnable);
+        hudHandler.removeCallbacks(memoryWatchdogRunnable);
+        hudHandler.postDelayed(memoryWatchdogRunnable, 15000);
         });
 
         btnPrompterAlign.setOnClickListener(v -> {
@@ -855,7 +1001,7 @@ public class MainActivity extends AppCompatActivity {
                 ensureMicPermissionAndInitVoice();
                 showHud("🎤 AI跟读: 开 (已暂停自动滚动)");
             } else {
-                if (voiceFollower != null) voiceFollower.stopListening();
+                if (voiceFollower != null) voiceFollower.release();
                 showHud("🎤 AI跟读: 关");
             }
             wakeFloatingBar();
@@ -1026,14 +1172,43 @@ public class MainActivity extends AppCompatActivity {
         syncToolbarHighlights();
             ensureMicPermissionAndInitVoice();
             showHud("🎤 正在启动 AI 严格跟读...");
+        } else if (isCountdownEnabled && tvCountdownOverlay != null) {
+            runCountdownAndStart();
         } else {
             startPrompter("开启提词");
         }
     }
 
+    private int countdownRemain = 0;
+    private final Runnable countdownTickRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (!isPrompterActive || tvCountdownOverlay == null) return;
+            if (countdownRemain <= 0) {
+                tvCountdownOverlay.setVisibility(View.GONE);
+                startPrompter("倒计时完成");
+            } else {
+                tvCountdownOverlay.setText(String.valueOf(countdownRemain));
+                countdownRemain--;
+                hudHandler.postDelayed(this, 1000);
+            }
+        }
+    };
+
+    private void runCountdownAndStart() {
+        isPlaying = false;
+        btnPrompterPlayPause.setImageResource(android.R.drawable.ic_media_play);
+        syncToolbarHighlights();
+        countdownRemain = 3;
+        tvCountdownOverlay.setVisibility(View.VISIBLE);
+        hudHandler.removeCallbacks(countdownTickRunnable);
+        countdownTickRunnable.run();
+    }
+
     private void exitPrompter() {
         pausePrompter("退出提词");
-        if (voiceFollower != null) voiceFollower.stopListening();
+        hudHandler.removeCallbacks(memoryWatchdogRunnable);
+        if (voiceFollower != null) voiceFollower.release();
         isPrompterActive = false;
 
         if (audioManager != null && savedOriginalVolume != -1) {
@@ -1332,14 +1507,10 @@ public class MainActivity extends AppCompatActivity {
         final int start;
         final int end;
         final String text;
-        final CharSequence unreadText;
-        final CharSequence readText;
-        ScriptChunk(int start, int end, String text, CharSequence unreadText, CharSequence readText) {
+        ScriptChunk(int start, int end, String text) {
             this.start = start;
             this.end = end;
             this.text = text;
-            this.unreadText = unreadText;
-            this.readText = readText;
         }
     }
 
@@ -1355,7 +1526,7 @@ public class MainActivity extends AppCompatActivity {
             int close = text.indexOf("**", open + 2);
             if (close < 0) break;
             if (close > open + 2) {
-                ss.setSpan(new android.text.style.RelativeSizeSpan(0.001f),
+                ss.setSpan(new android.text.style.ScaleXSpan(0f),
                         open, open + 2, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
                 ss.setSpan(new ForegroundColorSpan(Color.TRANSPARENT),
                         open, open + 2, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
@@ -1365,7 +1536,7 @@ public class MainActivity extends AppCompatActivity {
                     ss.setSpan(new ForegroundColorSpan(Color.parseColor("#22D3EE")),
                             open + 2, close, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
                 }
-                ss.setSpan(new android.text.style.RelativeSizeSpan(0.001f),
+                ss.setSpan(new android.text.style.ScaleXSpan(0f),
                         close, close + 2, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
                 ss.setSpan(new ForegroundColorSpan(Color.TRANSPARENT),
                         close, close + 2, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
@@ -1386,19 +1557,29 @@ public class MainActivity extends AppCompatActivity {
             int pos = i;
             while (pos < segEnd) {
                 int chunkEnd = Math.min(pos + 32, segEnd);
+                if (chunkEnd < segEnd) {
+                    // 避免把 **重点词** 截断在两块之间
+                    int lastOpen = fullText.lastIndexOf("**", chunkEnd - 1);
+                    if (lastOpen >= pos) {
+                        int countStars = 0;
+                        int scan = pos;
+                        while (true) {
+                            int found = fullText.indexOf("**", scan);
+                            if (found < 0 || found >= chunkEnd) break;
+                            countStars++;
+                            scan = found + 2;
+                        }
+                        if (countStars % 2 == 1) {
+                            int close = fullText.indexOf("**", chunkEnd);
+                            if (close >= 0 && close + 2 <= segEnd && close + 2 - pos <= 72) {
+                                chunkEnd = close + 2;
+                            }
+                        }
+                    }
+                }
                 String chunkStr = fullText.substring(pos, chunkEnd);
                 String displayStr = chunkStr.endsWith("\n") ? chunkStr.substring(0, chunkStr.length() - 1) : chunkStr;
-                CharSequence unread = displayStr;
-                CharSequence read = displayStr;
-                if (displayStr.contains("**")) {
-                    SpannableString uSpan = new SpannableString(displayStr);
-                    SpannableString rSpan = new SpannableString(displayStr);
-                    applyStaticBoldEmphasisSpans(uSpan, displayStr, false);
-                    applyStaticBoldEmphasisSpans(rSpan, displayStr, true);
-                    unread = uSpan;
-                    read = rSpan;
-                }
-                scriptChunks.add(new ScriptChunk(pos, chunkEnd, displayStr, unread, read));
+                scriptChunks.add(new ScriptChunk(pos, chunkEnd, displayStr));
                 pos = chunkEnd;
             }
             i = segEnd;
@@ -1408,6 +1589,11 @@ public class MainActivity extends AppCompatActivity {
     private class ChunkAdapter extends RecyclerView.Adapter<ChunkAdapter.VH> {
         class VH extends RecyclerView.ViewHolder {
             final TextView tv;
+            int boundFontSize = -1;
+            float boundLineSpacing = -1f;
+            int boundGravity = -1;
+            int boundColor = 0;
+            int chunkStartOffset = 0;
             VH(TextView tv) { super(tv); this.tv = tv; }
         }
 
@@ -1418,32 +1604,9 @@ public class MainActivity extends AppCompatActivity {
             tv.setLayoutParams(new RecyclerView.LayoutParams(
                     RecyclerView.LayoutParams.MATCH_PARENT,
                     RecyclerView.LayoutParams.WRAP_CONTENT));
-            tv.setLineSpacing(0f, 1.35f);
             tv.setTypeface(null, android.graphics.Typeface.NORMAL);
-            return new VH(tv);
-        }
-
-        @Override
-        public void onBindViewHolder(@NonNull VH holder, int position) {
-            ScriptChunk c = scriptChunks.get(position);
-            holder.tv.setTextSize(currentFontSize);
-            holder.tv.setLineSpacing(0f, currentLineSpacing);
-            holder.tv.setGravity(isAlignLeft ? Gravity.START : Gravity.CENTER_HORIZONTAL);
-            if (highlightedIndex >= c.end) {
-                holder.tv.setTextColor(Color.parseColor("#FACC15"));
-                holder.tv.setText(c.readText);
-            } else if (highlightedIndex <= c.start) {
-                holder.tv.setTextColor(Color.WHITE);
-                holder.tv.setText(c.unreadText);
-            } else {
-                holder.tv.setTextColor(Color.WHITE);
-                SpannableString ss = new SpannableString(c.text);
-                applyStaticBoldEmphasisSpans(ss, c.text, false);
-                int localEnd = Math.min(highlightedIndex - c.start, c.text.length());
-                ss.setSpan(ktvHighlightSpan, 0, localEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-                holder.tv.setText(ss);
-            }
-            holder.tv.setOnClickListener(v -> {
+            final VH holder = new VH(tv);
+            tv.setOnClickListener(v -> {
                 if (isPrompterActive) {
                     if (layoutLineSpacingPanel != null && layoutLineSpacingPanel.getVisibility() == View.VISIBLE) {
                         layoutLineSpacingPanel.setVisibility(View.GONE);
@@ -1453,13 +1616,77 @@ public class MainActivity extends AppCompatActivity {
                     wakeFloatingBar();
                 }
             });
-            holder.tv.setOnLongClickListener(v -> {
+            tv.setOnLongClickListener(v -> {
                 if (isPrompterActive) {
-                    jumpAndStartVoiceFollow(c.start);
+                    jumpAndStartVoiceFollow(holder.chunkStartOffset);
                     return true;
                 }
                 return false;
             });
+            return holder;
+        }
+
+        @Override
+        public void onBindViewHolder(@NonNull VH holder, int position) {
+            ScriptChunk c = scriptChunks.get(position);
+            holder.chunkStartOffset = c.start;
+            if (holder.boundFontSize != currentFontSize) {
+                holder.boundFontSize = currentFontSize;
+                holder.tv.setTextSize(currentFontSize);
+            }
+            if (holder.boundLineSpacing != currentLineSpacing) {
+                holder.boundLineSpacing = currentLineSpacing;
+                holder.tv.setLineSpacing(0f, currentLineSpacing);
+            }
+            int targetGravity = isAlignLeft ? Gravity.START : Gravity.CENTER_HORIZONTAL;
+            if (holder.boundGravity != targetGravity) {
+                holder.boundGravity = targetGravity;
+                holder.tv.setGravity(targetGravity);
+            }
+            if (highlightedIndex >= c.end) {
+                int cRead = Color.parseColor("#FACC15");
+                if (holder.boundColor != cRead) {
+                    holder.boundColor = cRead;
+                    holder.tv.setTextColor(cRead);
+                }
+                if (c.text.contains("**")) {
+                    SpannableString ss = new SpannableString(c.text);
+                    applyStaticBoldEmphasisSpans(ss, c.text, true);
+                    holder.tv.setText(ss);
+                } else {
+                    holder.tv.setText(c.text);
+                }
+            } else if (highlightedIndex <= c.start) {
+                if (holder.boundColor != Color.WHITE) {
+                    holder.boundColor = Color.WHITE;
+                    holder.tv.setTextColor(Color.WHITE);
+                }
+                if (c.text.contains("**")) {
+                    SpannableString ss = new SpannableString(c.text);
+                    applyStaticBoldEmphasisSpans(ss, c.text, false);
+                    holder.tv.setText(ss);
+                } else {
+                    holder.tv.setText(c.text);
+                }
+            } else {
+                if (holder.boundColor != Color.WHITE) {
+                    holder.boundColor = Color.WHITE;
+                    holder.tv.setTextColor(Color.WHITE);
+                }
+                SpannableString ss = new SpannableString(c.text);
+                if (c.text.contains("**")) {
+                    applyStaticBoldEmphasisSpans(ss, c.text, false);
+                }
+                int localEnd = Math.min(highlightedIndex - c.start, c.text.length());
+                ss.setSpan(ktvHighlightSpan, 0, localEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+                holder.tv.setText(ss);
+            }
+        }
+
+        @Override
+        public void onViewRecycled(@NonNull VH holder) {
+            super.onViewRecycled(holder);
+            holder.tv.setText(null);
         }
 
 
@@ -1471,7 +1698,7 @@ public class MainActivity extends AppCompatActivity {
                 int close = text.indexOf("**", open + 2);
                 if (close < 0) break;
                 if (close > open + 2) {
-                    ss.setSpan(new android.text.style.RelativeSizeSpan(0.001f),
+                    ss.setSpan(new android.text.style.ScaleXSpan(0f),
                             open, open + 2, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
                     ss.setSpan(new ForegroundColorSpan(Color.TRANSPARENT),
                             open, open + 2, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
@@ -1481,7 +1708,7 @@ public class MainActivity extends AppCompatActivity {
                         ss.setSpan(new ForegroundColorSpan(Color.parseColor("#22D3EE")),
                                 open + 2, close, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
                     }
-                    ss.setSpan(new android.text.style.RelativeSizeSpan(0.001f),
+                    ss.setSpan(new android.text.style.ScaleXSpan(0f),
                             close, close + 2, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
                     ss.setSpan(new ForegroundColorSpan(Color.TRANSPARENT),
                             close, close + 2, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
@@ -1497,13 +1724,21 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private int findChunkForOffset(int offset) {
-        for (int i = 0; i < scriptChunks.size(); i++) {
-            if (offset < scriptChunks.get(i).end) return i;
+        if (scriptChunks.isEmpty()) return 0;
+        int lo = 0, hi = scriptChunks.size() - 1;
+        while (lo < hi) {
+            int mid = (lo + hi) >>> 1;
+            if (offset < scriptChunks.get(mid).end) {
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
         }
-        return Math.max(0, scriptChunks.size() - 1);
+        return lo;
     }
 
     private void renderKtvText() {
+        if (scriptChunks.isEmpty()) return;
         int oldPos = activeChunkPos;
         int newPos = findChunkForOffset(highlightedIndex);
         activeChunkPos = newPos;
@@ -1597,7 +1832,13 @@ public class MainActivity extends AppCompatActivity {
             if (lastFrameTime == 0) {
                 lastFrameTime = frameTimeNanos;
             }
-            float deltaSeconds = (frameTimeNanos - lastFrameTime) / 1_000_000_000.0f;
+            long elapsedNanos = frameTimeNanos - lastFrameTime;
+            // 节流至 ~60fps：高刷屏(120Hz)跳过过密帧，显著降低CPU与GPU发热占用
+            if (elapsedNanos > 0 && elapsedNanos < 15_000_000L) {
+                Choreographer.getInstance().postFrameCallback(this);
+                return;
+            }
+            float deltaSeconds = elapsedNanos / 1_000_000_000.0f;
             lastFrameTime = frameTimeNanos;
 
             if (prompterRecyclerView.getChildCount() == 0 || prompterRecyclerView.getHeight() == 0) {
@@ -1633,6 +1874,28 @@ public class MainActivity extends AppCompatActivity {
         hudHandler.removeCallbacks(hideHudRunnable);
         hudHandler.postDelayed(hideHudRunnable, 2000);
     }
+
+
+    private final Runnable memoryWatchdogRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (!isPrompterActive) return;
+            try {
+                Runtime rt = Runtime.getRuntime();
+                long used = rt.totalMemory() - rt.freeMemory();
+                long max = rt.maxMemory();
+                if (max > 0 && (used * 100L / max) >= 70L) {
+                    if (prompterRecyclerView != null) {
+                        prompterRecyclerView.getRecycledViewPool().clear();
+                    }
+                    if (!isVoiceFollow) {
+                        VoiceFollower.Companion.releaseSharedModelIfIdle();
+                    }
+                }
+            } catch (Exception ignored) {}
+            hudHandler.postDelayed(this, 15000);
+        }
+    };
 
     private final Runnable hideHudRunnable = () -> tvPrompterHud.setVisibility(View.GONE);
 
@@ -1670,6 +1933,7 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        force60HzRefreshRate();
         requestExclusiveAudioFocus();
         if (mediaSession != null) {
             mediaSession.setActive(true);
@@ -1688,6 +1952,45 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+
+    private void force60HzRefreshRate() {
+        try {
+            WindowManager.LayoutParams lp = getWindow().getAttributes();
+            lp.preferredRefreshRate = 60.0f;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                android.view.Display display = getWindowManager().getDefaultDisplay();
+                if (display != null) {
+                    android.view.Display.Mode current = display.getMode();
+                    android.view.Display.Mode best60 = null;
+                    float bestDiff = Float.MAX_VALUE;
+                    for (android.view.Display.Mode m : display.getSupportedModes()) {
+                        if (m.getPhysicalWidth() == current.getPhysicalWidth()
+                                && m.getPhysicalHeight() == current.getPhysicalHeight()) {
+                            float diff = Math.abs(m.getRefreshRate() - 60.0f);
+                            if (diff < bestDiff) {
+                                bestDiff = diff;
+                                best60 = m;
+                            }
+                        }
+                    }
+                    if (best60 != null && bestDiff <= 5.0f) {
+                        lp.preferredDisplayModeId = best60.getModeId();
+                    }
+                }
+            }
+            getWindow().setAttributes(lp);
+        } catch (Exception ignored) {}
+    }
+
+    @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        if (level >= TRIM_MEMORY_RUNNING_LOW && !isVoiceFollow) {
+            if (voiceFollower != null) voiceFollower.stopListening();
+            VoiceFollower.Companion.releaseSharedModelIfIdle();
+        }
+    }
+
     @Override
     protected void onDestroy() {
         super.onDestroy();
@@ -1701,7 +2004,7 @@ public class MainActivity extends AppCompatActivity {
             audioManager.abandonAudioFocusRequest(audioFocusRequest);
         }
         Choreographer.getInstance().removeFrameCallback(frameCallback);
-        if (voiceFollower != null) voiceFollower.stopListening();
+        if (voiceFollower != null) voiceFollower.release();
         hudHandler.removeCallbacksAndMessages(null);
     }
 }

@@ -38,6 +38,15 @@ class VoiceFollower(
         @Volatile
         private var sharedRecognizer: OnlineRecognizer? = null
         private val modelLock = Any()
+
+        fun releaseSharedModelIfIdle() {
+            synchronized(modelLock) {
+                try {
+                    sharedRecognizer?.release()
+                } catch (_: Throwable) {}
+                sharedRecognizer = null
+            }
+        }
     }
 
     @Volatile
@@ -202,16 +211,26 @@ class VoiceFollower(
                 val shortBuf = ShortArray(1600)
                 val floatBuf = FloatArray(1600)
                 var lastLength = 0
+                var voiceHoldFrames = 0
+                var lastStreamResetMs = System.currentTimeMillis()
 
                 while (isRunning) {
                     val read = ar.read(shortBuf, 0, shortBuf.size)
                     if (read > 0 && isRunning) {
-                        // 高灵敏度自适应软增益：极小声说话也能清晰放大并防止爆音
                         var peak = 0f
                         for (i in 0 until read) {
                             val v = abs(shortBuf[i] / 32768.0f)
                             if (v > peak) peak = v
                         }
+                        // 静音门限：极小声(peak >= 0.0022f)即可唤醒，纯静音超过 400ms 跳过神经网路推理以大幅降低 CPU 与内存
+                        if (peak >= 0.0022f) {
+                            voiceHoldFrames = 4
+                        } else if (voiceHoldFrames > 0) {
+                            voiceHoldFrames--
+                        } else {
+                            continue
+                        }
+
                         val gain = if (peak > 0.0015f) minOf(8.0f, 0.55f / peak) else 6.0f
                         for (i in 0 until read) {
                             val boosted = (shortBuf[i] / 32768.0f) * gain
@@ -232,10 +251,12 @@ class VoiceFollower(
                                 lastLength = text.length
                                 mainHandler.post { listener.onNewSpokenText(delta) }
                             }
-                            if (rec.isEndpoint(stream!!) || lastLength > 80) {
+                            val nowMs = System.currentTimeMillis()
+                            if (rec.isEndpoint(stream!!) || lastLength > 60 || (nowMs - lastStreamResetMs) > 20000L) {
                                 stream!!.release()
                                 stream = rec.createStream()
                                 lastLength = 0
+                                lastStreamResetMs = nowMs
                             }
                         }
                     }
@@ -272,7 +293,7 @@ class VoiceFollower(
         workerThread = null
         if (t != null && t != Thread.currentThread()) {
             try {
-                t.join(350)
+                t.join(500)
             } catch (_: InterruptedException) {}
         }
         audioRecord = null
@@ -280,5 +301,6 @@ class VoiceFollower(
 
     fun release() {
         stopListening()
+        releaseSharedModelIfIdle()
     }
 }

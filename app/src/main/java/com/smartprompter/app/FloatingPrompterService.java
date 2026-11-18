@@ -274,7 +274,7 @@ public class FloatingPrompterService extends Service {
                 syncFloatHighlightToTopVisibleLine();
                 startVoiceFollow();
             } else if (voiceFollower != null) {
-                voiceFollower.stopListening();
+                voiceFollower.release();
             }
         });
         floatView.findViewById(R.id.btnFloatOrient).setOnClickListener(v -> {
@@ -435,7 +435,7 @@ public class FloatingPrompterService extends Service {
         if (isAiOn) {
             isAiOn = false;
             btnFloatAi.setTextColor(Color.parseColor("#CBD5E1"));
-            if (voiceFollower != null) voiceFollower.stopListening();
+            if (voiceFollower != null) voiceFollower.release();
             saveFloatPrefs();
         }
         isPlaying = true;
@@ -457,7 +457,12 @@ public class FloatingPrompterService extends Service {
         @Override public void doFrame(long frameTimeNanos) {
             if (!isPlaying) return;
             if (lastFrameTime == 0) lastFrameTime = frameTimeNanos;
-            float dt = (frameTimeNanos - lastFrameTime) / 1_000_000_000.0f;
+            long elapsedNanos = frameTimeNanos - lastFrameTime;
+            if (elapsedNanos > 0 && elapsedNanos < 15_000_000L) {
+                Choreographer.getInstance().postFrameCallback(this);
+                return;
+            }
+            float dt = elapsedNanos / 1_000_000_000.0f;
             lastFrameTime = frameTimeNanos;
             if (dt > 0f && dt < 0.1f) {
                 currentScrollY += currentSpeed * dt;
@@ -584,7 +589,7 @@ public class FloatingPrompterService extends Service {
             int close = text.indexOf("**", open + 2);
             if (close < 0) break;
             if (close > open + 2) {
-                sp.setSpan(new android.text.style.RelativeSizeSpan(0.001f),
+                sp.setSpan(new android.text.style.ScaleXSpan(0f),
                         open, open + 2, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
                 sp.setSpan(new ForegroundColorSpan(Color.TRANSPARENT),
                         open, open + 2, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
@@ -592,7 +597,7 @@ public class FloatingPrompterService extends Service {
                         open + 2, close, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
                 sp.setSpan(new ForegroundColorSpan(Color.parseColor("#22D3EE")),
                         open + 2, close, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-                sp.setSpan(new android.text.style.RelativeSizeSpan(0.001f),
+                sp.setSpan(new android.text.style.ScaleXSpan(0f),
                         close, close + 2, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
                 sp.setSpan(new ForegroundColorSpan(Color.TRANSPARENT),
                         close, close + 2, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
@@ -630,6 +635,15 @@ public class FloatingPrompterService extends Service {
                 .putBoolean(KEY_MIRROR, isMirror)
                 .putBoolean(KEY_VOICE_FOLLOW, isAiOn)
                 .apply();
+    }
+
+    @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        if (level >= TRIM_MEMORY_RUNNING_LOW && !isAiOn) {
+            if (voiceFollower != null) voiceFollower.stopListening();
+            VoiceFollower.Companion.releaseSharedModelIfIdle();
+        }
     }
 
     @Override
