@@ -1942,7 +1942,7 @@ public class MainActivity extends AppCompatActivity {
         int savedHighlight = sp.getInt("prompter_session_highlight_idx", 0);
         boolean savedLand = sp.getBoolean("prompter_session_landscape", true);
         if (dIdx >= 0 && dIdx < drafts.size()) {
-            openDraft(dIdx);
+            openDraftInEditor(dIdx);
             openPrompter();
             if (!savedLand) {
                 isLandscape = false;
