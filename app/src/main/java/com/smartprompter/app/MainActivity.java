@@ -136,7 +136,12 @@ public class MainActivity extends AppCompatActivity {
     private ImageButton btnPrompterMirror;
     private ImageButton btnPrompterAlign;
     private Button btnPrompterAi;
-    private Button btnPrompterMic;
+    private ImageButton btnPrompterMic;
+    private Button btnPrompterLineSpacing;
+    private LinearLayout layoutLineSpacingPanel;
+    private SeekBar seekLineSpacing;
+    private TextView tvLineSpacingVal;
+    private float currentLineSpacing = 1.15f;
     private ImageButton btnPrompterOrientation;
     private ImageButton btnPrompterPlayPause;
     private TextView tvPrompterSpeedIndicator;
@@ -266,6 +271,10 @@ public class MainActivity extends AppCompatActivity {
         btnPrompterAlign = findViewById(R.id.btnPrompterAlign);
         btnPrompterAi = findViewById(R.id.btnPrompterAi);
         btnPrompterMic = findViewById(R.id.btnPrompterMic);
+        btnPrompterLineSpacing = findViewById(R.id.btnPrompterLineSpacing);
+        layoutLineSpacingPanel = findViewById(R.id.layoutLineSpacingPanel);
+        seekLineSpacing = findViewById(R.id.seekLineSpacing);
+        tvLineSpacingVal = findViewById(R.id.tvLineSpacingVal);
         btnPrompterOrientation = findViewById(R.id.btnPrompterOrientation);
         btnPrompterPlayPause = findViewById(R.id.btnPrompterPlayPause);
         tvPrompterSpeedIndicator = findViewById(R.id.tvPrompterSpeedIndicator);
@@ -864,6 +873,27 @@ public class MainActivity extends AppCompatActivity {
             wakeFloatingBar();
         });
 
+        btnPrompterLineSpacing.setOnClickListener(v -> {
+            boolean show = layoutLineSpacingPanel.getVisibility() != View.VISIBLE;
+            layoutLineSpacingPanel.setVisibility(show ? View.VISIBLE : View.GONE);
+            syncToolbarHighlights();
+            wakeFloatingBar();
+        });
+
+        seekLineSpacing.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                currentLineSpacing = 1.00f + (progress * 0.01f);
+                tvLineSpacingVal.setText(String.format(Locale.US, "%.2fx", currentLineSpacing));
+                if (fromUser && isPrompterActive) {
+                    chunkAdapter.notifyDataSetChanged();
+                    wakeFloatingBar();
+                }
+            }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) { saveSettings(); }
+        });
+
         btnPrompterOrientation.setOnClickListener(v -> {
             isLandscape = !isLandscape;
             if (isLandscape) {
@@ -1015,6 +1045,7 @@ public class MainActivity extends AppCompatActivity {
 
         setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
 
+        if (layoutLineSpacingPanel != null) layoutLineSpacingPanel.setVisibility(View.GONE);
         layoutPrompter.setVisibility(View.GONE);
         layoutEditor.setVisibility(View.VISIBLE);
 
@@ -1063,6 +1094,14 @@ public class MainActivity extends AppCompatActivity {
         }
         if (btnPrompterAi != null) {
             btnPrompterAi.setTextColor(isVoiceFollow ? activeColor : normalColor);
+        }
+        if (btnPrompterMic != null) {
+            btnPrompterMic.setImageResource(useBluetoothMic ? R.drawable.ic_mic_bluetooth : R.drawable.ic_mic_phone);
+            btnPrompterMic.setColorFilter(useBluetoothMic ? activeColor : normalColor);
+        }
+        if (btnPrompterLineSpacing != null) {
+            boolean panelOpen = layoutLineSpacingPanel != null && layoutLineSpacingPanel.getVisibility() == View.VISIBLE;
+            btnPrompterLineSpacing.setTextColor(panelOpen ? activeColor : normalColor);
         }
         if (btnPrompterOrientation != null) {
             btnPrompterOrientation.setColorFilter(isLandscape ? activeColor : normalColor);
@@ -1348,17 +1387,18 @@ public class MainActivity extends AppCompatActivity {
             while (pos < segEnd) {
                 int chunkEnd = Math.min(pos + 32, segEnd);
                 String chunkStr = fullText.substring(pos, chunkEnd);
-                CharSequence unread = chunkStr;
-                CharSequence read = chunkStr;
-                if (chunkStr.contains("**")) {
-                    SpannableString uSpan = new SpannableString(chunkStr);
-                    SpannableString rSpan = new SpannableString(chunkStr);
-                    applyStaticBoldEmphasisSpans(uSpan, chunkStr, false);
-                    applyStaticBoldEmphasisSpans(rSpan, chunkStr, true);
+                String displayStr = chunkStr.endsWith("\n") ? chunkStr.substring(0, chunkStr.length() - 1) : chunkStr;
+                CharSequence unread = displayStr;
+                CharSequence read = displayStr;
+                if (displayStr.contains("**")) {
+                    SpannableString uSpan = new SpannableString(displayStr);
+                    SpannableString rSpan = new SpannableString(displayStr);
+                    applyStaticBoldEmphasisSpans(uSpan, displayStr, false);
+                    applyStaticBoldEmphasisSpans(rSpan, displayStr, true);
                     unread = uSpan;
                     read = rSpan;
                 }
-                scriptChunks.add(new ScriptChunk(pos, chunkEnd, chunkStr, unread, read));
+                scriptChunks.add(new ScriptChunk(pos, chunkEnd, displayStr, unread, read));
                 pos = chunkEnd;
             }
             i = segEnd;
@@ -1387,6 +1427,7 @@ public class MainActivity extends AppCompatActivity {
         public void onBindViewHolder(@NonNull VH holder, int position) {
             ScriptChunk c = scriptChunks.get(position);
             holder.tv.setTextSize(currentFontSize);
+            holder.tv.setLineSpacing(0f, currentLineSpacing);
             holder.tv.setGravity(isAlignLeft ? Gravity.START : Gravity.CENTER_HORIZONTAL);
             if (highlightedIndex >= c.end) {
                 holder.tv.setTextColor(Color.parseColor("#FACC15"));

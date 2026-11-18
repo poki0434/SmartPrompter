@@ -421,6 +421,47 @@
             android:textStyle="bold"
             android:visibility="gone" />
 
+        <LinearLayout
+            android:id="@+id/layoutLineSpacingPanel"
+            android:layout_width="260dp"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|center_horizontal"
+            android:layout_marginBottom="72dp"
+            android:background="#E60F172A"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:paddingTop="8dp"
+            android:paddingBottom="8dp"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="行距"
+                android:textColor="#CBD5E1"
+                android:textSize="12sp" />
+
+            <SeekBar
+                android:id="@+id/seekLineSpacing"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:max="100"
+                android:progress="15" />
+
+            <TextView
+                android:id="@+id/tvLineSpacingVal"
+                android:layout_width="42dp"
+                android:layout_height="wrap_content"
+                android:gravity="end"
+                android:text="1.15x"
+                android:textColor="#38BDF8"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
         <HorizontalScrollView
             android:id="@+id/layoutFloatingBar"
             android:layout_width="wrap_content"
@@ -561,14 +602,24 @@
                     android:textSize="12sp"
                     android:textStyle="bold" />
 
-                <Button
+                <ImageButton
                     android:id="@+id/btnPrompterMic"
+                    android:layout_width="28dp"
+                    android:layout_height="34dp"
+                    android:padding="5dp"
+                    android:scaleType="centerInside"
+                    android:background="?android:attr/selectableItemBackgroundBorderless"
+                    android:src="@drawable/ic_mic_phone"
+                    android:contentDescription="切换收音麦克风" />
+
+                <Button
+                    android:id="@+id/btnPrompterLineSpacing"
                     style="?android:attr/borderlessButtonStyle"
-                    android:layout_width="38dp"
+                    android:layout_width="34dp"
                     android:layout_height="34dp"
                     android:minWidth="0dp"
                     android:padding="0dp"
-                    android:text="📱麦"
+                    android:text="行距"
                     android:textAllCaps="false"
                     android:textColor="#CBD5E1"
                     android:textSize="11sp" />
