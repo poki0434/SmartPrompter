@@ -16,9 +16,11 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 极致轻量原生 Canvas 提词直绘引擎：
- * 零 RecyclerView / 零 TextView / 零 StaticLayout / onDraw 零对象分配。
- * 每帧仅绘制当前屏幕可见的几行文字，彻底消除长文本卡顿、CPU 飙高与渲染内存溢出。
+ * 原生 Canvas 直绘提词引擎（v57 增强版）：
+ * 1. 零 RecyclerView / 零 TextView，彻底避免长文本内存异常与卡顿
+ * 2. AI 跟读平滑颜色渐变 + 平滑行滚动动画
+ * 3. 精确返回当前屏幕可见字符区间，限制 AI 跟读只匹配屏幕内未读台词
+ * 4. 自动识别 Markdown # 标题，支持顶部进度条实时同步与按标题快速跳转
  */
 public class PrompterCanvasView extends View {
 
@@ -27,6 +29,19 @@ public class PrompterCanvasView extends View {
         void onLongPressOffset(int charOffset);
         void onUserScrollFinished();
         void onReachBottom();
+        void onScrollProgress(float progress01, String currentChapterTitle);
+    }
+
+    public static class Chapter {
+        public final String title;
+        public final int charOffset;
+        public final float scrollY;
+
+        public Chapter(String title, int charOffset, float scrollY) {
+            this.title = title;
+            this.charOffset = charOffset;
+            this.scrollY = scrollY;
+        }
     }
 
     private static class Run {
@@ -46,27 +61,30 @@ public class PrompterCanvasView extends View {
         final int endOffset;
         final List<Run> runs;
         final float totalWidth;
-        final String plainText;
+        final boolean isHeading;
 
-        LineItem(int startOffset, int endOffset, List<Run> runs, float totalWidth, String plainText) {
+        LineItem(int startOffset, int endOffset, List<Run> runs, float totalWidth, boolean isHeading) {
             this.startOffset = startOffset;
             this.endOffset = endOffset;
             this.runs = runs;
             this.totalWidth = totalWidth;
-            this.plainText = plainText;
+            this.isHeading = isHeading;
         }
     }
 
     private final Paint normalPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint boldPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final List<LineItem> lines = new ArrayList<>();
+    private final List<Chapter> chapters = new ArrayList<>();
 
     private String rawScript = "";
     private float fontSizeSp = 48f;
     private float lineSpacingMult = 1.15f;
     private boolean isAlignLeft = false;
     private boolean isMirror = false;
-    private int highlightedIndex = 0;
+
+    private int targetHighlightedIndex = 0;
+    private float animatedHighlightIndex = 0f;
 
     private float scrollY = 0f;
     private float maxScrollY = 0f;
@@ -150,10 +168,12 @@ public class PrompterCanvasView extends View {
 
     public void setScript(String script) {
         this.rawScript = script == null ? "" : script;
-        this.highlightedIndex = 0;
+        this.targetHighlightedIndex = 0;
+        this.animatedHighlightIndex = 0f;
         this.scrollY = 0f;
         if (!scroller.isFinished()) scroller.abortAnimation();
         relayoutLines();
+        notifyProgress();
         invalidate();
     }
 
@@ -169,25 +189,38 @@ public class PrompterCanvasView extends View {
         invalidate();
     }
 
-    public void setHighlightedIndex(int index) {
-        this.highlightedIndex = Math.max(0, index);
+    public void setHighlightedIndex(int index, boolean smooth) {
+        this.targetHighlightedIndex = Math.max(0, index);
+        if (!smooth) {
+            this.animatedHighlightIndex = this.targetHighlightedIndex;
+        }
         invalidate();
     }
 
-    public void scrollToCharOffset(int offset) {
+    public void smoothScrollToCharOffset(int offset) {
         if (lines.isEmpty()) return;
-        int lo = 0, hi = lines.size() - 1;
-        while (lo < hi) {
-            int mid = (lo + hi) >>> 1;
-            if (offset < lines.get(mid).endOffset) {
-                hi = mid;
-            } else {
-                lo = mid + 1;
-            }
+        int lineIdx = findLineForOffset(offset);
+        float targetY = Math.max(0f, Math.min(maxScrollY, lineIdx * lineHeightPx));
+        int startY = Math.round(scrollY);
+        int dy = Math.round(targetY - scrollY);
+        if (Math.abs(dy) < 2) {
+            scrollY = targetY;
+            notifyProgress();
+            invalidate();
+            return;
         }
-        float targetY = lo * lineHeightPx;
-        scrollY = Math.max(0f, Math.min(maxScrollY, targetY));
-        invalidate();
+        if (!scroller.isFinished()) scroller.abortAnimation();
+        scroller.startScroll(0, startY, 0, dy, 320);
+        postInvalidateOnAnimation();
+    }
+
+    public int[] getVisibleCharRange() {
+        if (lines.isEmpty()) return new int[]{0, 0};
+        int viewH = getHeight() > 0 ? getHeight() : getResources().getDisplayMetrics().heightPixels;
+        int first = Math.max(0, (int) Math.floor((scrollY - topPadPx) / lineHeightPx));
+        int last = Math.min(lines.size() - 1, (int) Math.ceil((scrollY + viewH - topPadPx) / lineHeightPx));
+        if (first > last) first = last;
+        return new int[]{lines.get(first).startOffset, lines.get(last).endOffset};
     }
 
     public int getFocusLineCharOffset() {
@@ -198,10 +231,65 @@ public class PrompterCanvasView extends View {
         return lines.get(idx).startOffset;
     }
 
+    public float getScrollYPos() {
+        return scrollY;
+    }
+
+    public void restoreState(float savedScrollY, int savedHighlightIdx) {
+        this.scrollY = Math.max(0f, Math.min(maxScrollY, savedScrollY));
+        this.targetHighlightedIndex = Math.max(0, savedHighlightIdx);
+        this.animatedHighlightIndex = this.targetHighlightedIndex;
+        notifyProgress();
+        invalidate();
+    }
+
+    public List<Chapter> getChapters() {
+        return chapters;
+    }
+
+    public String getChapterTitleAtProgress(float progress01) {
+        if (chapters.isEmpty()) return "";
+        float targetY = Math.max(0f, Math.min(maxScrollY, progress01 * maxScrollY));
+        String title = "";
+        for (Chapter ch : chapters) {
+            if (ch.scrollY <= targetY + lineHeightPx * 0.5f) {
+                title = ch.title;
+            } else {
+                break;
+            }
+        }
+        return title;
+    }
+
+    public void seekToProgress(float progress01, boolean snapToNearestChapter) {
+        float targetY = Math.max(0f, Math.min(maxScrollY, progress01 * maxScrollY));
+        if (snapToNearestChapter && !chapters.isEmpty() && maxScrollY > 0f) {
+            float snapThreshold = Math.max(lineHeightPx * 2f, maxScrollY * 0.035f);
+            Chapter best = null;
+            float bestDist = Float.MAX_VALUE;
+            for (Chapter ch : chapters) {
+                float d = Math.abs(ch.scrollY - targetY);
+                if (d < bestDist && d <= snapThreshold) {
+                    bestDist = d;
+                    best = ch;
+                }
+            }
+            if (best != null) {
+                targetY = Math.max(0f, Math.min(maxScrollY, best.scrollY));
+            }
+        }
+        if (!scroller.isFinished()) scroller.abortAnimation();
+        scrollY = targetY;
+        notifyProgress();
+        invalidate();
+    }
+
     public void resetToTop() {
-        this.highlightedIndex = 0;
+        this.targetHighlightedIndex = 0;
+        this.animatedHighlightIndex = 0f;
         this.scrollY = 0f;
         if (!scroller.isFinished()) scroller.abortAnimation();
+        notifyProgress();
         invalidate();
     }
 
@@ -210,6 +298,7 @@ public class PrompterCanvasView extends View {
         float next = scrollY + dy;
         if (next >= maxScrollY) {
             scrollY = maxScrollY;
+            notifyProgress();
             invalidate();
             if (dy > 0 && interactionListener != null) {
                 interactionListener.onReachBottom();
@@ -217,15 +306,41 @@ public class PrompterCanvasView extends View {
             return false;
         }
         scrollY = Math.max(0f, next);
+        notifyProgress();
         invalidate();
         return true;
+    }
+
+    private int findLineForOffset(int offset) {
+        int lo = 0, hi = lines.size() - 1;
+        while (lo < hi) {
+            int mid = (lo + hi) >>> 1;
+            if (offset < lines.get(mid).endOffset) {
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        return lo;
+    }
+
+    private void notifyProgress() {
+        if (interactionListener == null) return;
+        float p = (maxScrollY > 0f) ? (scrollY / maxScrollY) : 0f;
+        p = Math.max(0f, Math.min(1f, p));
+        interactionListener.onScrollProgress(p, getChapterTitleAtProgress(p));
     }
 
     @Override
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
         super.onSizeChanged(w, h, oldw, oldh);
         if (w != oldw && w > 0) {
+            float prevRatio = (maxScrollY > 0f) ? (scrollY / maxScrollY) : 0f;
             relayoutLines();
+            if (prevRatio > 0f && maxScrollY > 0f) {
+                scrollY = Math.max(0f, Math.min(maxScrollY, prevRatio * maxScrollY));
+            }
+            notifyProgress();
         }
     }
 
@@ -233,6 +348,7 @@ public class PrompterCanvasView extends View {
     public void computeScroll() {
         if (scroller.computeScrollOffset()) {
             scrollY = Math.max(0f, Math.min(maxScrollY, scroller.getCurrY()));
+            notifyProgress();
             postInvalidateOnAnimation();
         }
     }
@@ -249,6 +365,7 @@ public class PrompterCanvasView extends View {
 
     private void relayoutLines() {
         lines.clear();
+        chapters.clear();
         float textPx = TypedValue.applyDimension(
                 TypedValue.COMPLEX_UNIT_SP, fontSizeSp, getResources().getDisplayMetrics());
         normalPaint.setTextSize(textPx);
@@ -270,7 +387,6 @@ public class PrompterCanvasView extends View {
             return;
         }
 
-        // 解析全文为带 bold 标记的字符流，同时保留原始偏移映射，只做一次 O(N) 线性扫描
         int len = rawScript.length();
         int i = 0;
         while (i < len) {
@@ -278,15 +394,30 @@ public class PrompterCanvasView extends View {
             int segEnd = (nl == -1) ? len : nl;
 
             if (segEnd == i) {
-                // 空行
-                lines.add(new LineItem(i, Math.min(len, i + 1), new ArrayList<>(), 0f, ""));
+                lines.add(new LineItem(i, Math.min(len, i + 1), new ArrayList<>(), 0f, false));
                 i = (nl == -1) ? len : nl + 1;
                 continue;
             }
 
-            // 将这一段按 **...** 拆成若干视觉片段，再按 maxLineW 断行
-            List<Run> segRuns = parseRunsForSegment(rawScript, i, segEnd);
-            wrapRunsIntoLines(segRuns, i, (nl == -1) ? len : nl + 1, maxLineW);
+            // 检测 Markdown 标题 (# 标题)
+            int contentStart = i;
+            boolean isHeading = false;
+            int hashCount = 0;
+            while (contentStart + hashCount < segEnd && rawScript.charAt(contentStart + hashCount) == '#') {
+                hashCount++;
+            }
+            if (hashCount >= 1 && hashCount <= 6 && contentStart + hashCount < segEnd
+                    && rawScript.charAt(contentStart + hashCount) == ' ') {
+                isHeading = true;
+                String headingTitle = rawScript.substring(contentStart + hashCount + 1, segEnd)
+                        .replace("**", "").trim();
+                float chapterY = lines.size() * lineHeightPx;
+                chapters.add(new Chapter(headingTitle, i, chapterY));
+                contentStart = contentStart + hashCount + 1;
+            }
+
+            List<Run> segRuns = parseRunsForSegment(rawScript, contentStart, segEnd, isHeading);
+            wrapRunsIntoLines(segRuns, i, (nl == -1) ? len : nl + 1, maxLineW, isHeading);
             i = (nl == -1) ? len : nl + 1;
         }
 
@@ -296,24 +427,27 @@ public class PrompterCanvasView extends View {
         if (scrollY > maxScrollY) scrollY = maxScrollY;
     }
 
-    private List<Run> parseRunsForSegment(String s, int start, int end) {
+    private List<Run> parseRunsForSegment(String s, int start, int end, boolean forceBold) {
         List<Run> out = new ArrayList<>();
         int idx = start;
         while (idx < end) {
             int open = s.indexOf("**", idx);
             if (open < 0 || open >= end) {
                 String part = s.substring(idx, end);
-                out.add(new Run(part, false, normalPaint.measureText(part)));
+                Paint p = forceBold ? boldPaint : normalPaint;
+                out.add(new Run(part, forceBold, p.measureText(part)));
                 break;
             }
             if (open > idx) {
                 String pre = s.substring(idx, open);
-                out.add(new Run(pre, false, normalPaint.measureText(pre)));
+                Paint p = forceBold ? boldPaint : normalPaint;
+                out.add(new Run(pre, forceBold, p.measureText(pre)));
             }
             int close = s.indexOf("**", open + 2);
             if (close < 0 || close >= end) {
                 String rest = s.substring(open, end);
-                out.add(new Run(rest, false, normalPaint.measureText(rest)));
+                Paint p = forceBold ? boldPaint : normalPaint;
+                out.add(new Run(rest, forceBold, p.measureText(rest)));
                 break;
             }
             String boldPart = s.substring(open + 2, close);
@@ -325,9 +459,8 @@ public class PrompterCanvasView extends View {
         return out;
     }
 
-    private void wrapRunsIntoLines(List<Run> segRuns, int segStartOffset, int segEndOffset, float maxLineW) {
+    private void wrapRunsIntoLines(List<Run> segRuns, int segStartOffset, int segEndOffset, float maxLineW, boolean isHeading) {
         List<Run> curLineRuns = new ArrayList<>();
-        StringBuilder curPlain = new StringBuilder();
         float curW = 0f;
         int curStartOff = segStartOffset;
         int charCursor = segStartOffset;
@@ -339,9 +472,8 @@ public class PrompterCanvasView extends View {
             while (pos < txt.length()) {
                 float avail = maxLineW - curW;
                 if (avail <= 4f && !curLineRuns.isEmpty()) {
-                    lines.add(new LineItem(curStartOff, charCursor, curLineRuns, curW, curPlain.toString()));
+                    lines.add(new LineItem(curStartOff, charCursor, curLineRuns, curW, isHeading));
                     curLineRuns = new ArrayList<>();
-                    curPlain.setLength(0);
                     curW = 0f;
                     curStartOff = charCursor;
                     avail = maxLineW;
@@ -351,19 +483,37 @@ public class PrompterCanvasView extends View {
                 String sub = txt.substring(pos, pos + fit);
                 float subW = p.measureText(sub);
                 curLineRuns.add(new Run(sub, r.isBold, subW));
-                curPlain.append(sub);
                 curW += subW;
                 pos += fit;
                 charCursor += fit;
             }
         }
-        lines.add(new LineItem(curStartOff, segEndOffset, curLineRuns, curW, curPlain.toString()));
+        lines.add(new LineItem(curStartOff, segEndOffset, curLineRuns, curW, isHeading));
+    }
+
+    private int blendColor(int cFrom, int cTo, float t) {
+        t = Math.max(0f, Math.min(1f, t));
+        int a = Math.round(Color.alpha(cFrom) + (Color.alpha(cTo) - Color.alpha(cFrom)) * t);
+        int r = Math.round(Color.red(cFrom) + (Color.red(cTo) - Color.red(cFrom)) * t);
+        int g = Math.round(Color.green(cFrom) + (Color.green(cTo) - Color.green(cFrom)) * t);
+        int b = Math.round(Color.blue(cFrom) + (Color.blue(cTo) - Color.blue(cFrom)) * t);
+        return Color.argb(a, r, g, b);
     }
 
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
         if (lines.isEmpty()) return;
+
+        // 平滑推进动画游标（让 KTV 变色流畅过渡而不是生硬跳变）
+        boolean needMoreAnim = false;
+        float diff = targetHighlightedIndex - animatedHighlightIndex;
+        if (Math.abs(diff) > 0.08f) {
+            animatedHighlightIndex += diff * 0.28f;
+            needMoreAnim = true;
+        } else {
+            animatedHighlightIndex = targetHighlightedIndex;
+        }
 
         int viewW = getWidth();
         int viewH = getHeight();
@@ -379,6 +529,7 @@ public class PrompterCanvasView extends View {
 
         int yellow = Color.parseColor("#FACC15");
         int cyan = Color.parseColor("#22D3EE");
+        int headingColor = Color.parseColor("#38BDF8");
 
         for (int idx = firstLine; idx <= lastLine; idx++) {
             LineItem line = lines.get(idx);
@@ -387,40 +538,55 @@ public class PrompterCanvasView extends View {
             float y = topPadPx + idx * lineHeightPx - scrollY + baselineOffsetPx;
             float x = isAlignLeft ? horizPadPx : Math.max(horizPadPx, (viewW - line.totalWidth) / 2f);
 
-            boolean fullyRead = highlightedIndex >= line.endOffset;
-            boolean fullyUnread = highlightedIndex <= line.startOffset;
+            boolean fullyRead = animatedHighlightIndex >= line.endOffset;
+            boolean fullyUnread = animatedHighlightIndex <= line.startOffset;
 
             if (fullyRead || fullyUnread) {
                 for (int r = 0; r < line.runs.size(); r++) {
                     Run run = line.runs.get(r);
                     Paint p = run.isBold ? boldPaint : normalPaint;
-                    p.setColor(fullyRead ? yellow : (run.isBold ? cyan : Color.WHITE));
+                    int unreadCol = line.isHeading ? headingColor : (run.isBold ? cyan : Color.WHITE);
+                    p.setColor(fullyRead ? yellow : unreadCol);
                     canvas.drawText(run.text, x, y, p);
                     x += run.width;
                 }
             } else {
-                // 部分已读（逐字高亮过渡）
-                int localReadLimit = Math.max(0, highlightedIndex - line.startOffset);
+                float localLimit = Math.max(0f, animatedHighlightIndex - line.startOffset);
+                int wholeRead = (int) Math.floor(localLimit);
+                float edgeFrac = localLimit - wholeRead;
                 int drawnChars = 0;
                 for (int r = 0; r < line.runs.size(); r++) {
                     Run run = line.runs.get(r);
                     Paint p = run.isBold ? boldPaint : normalPaint;
+                    int unreadCol = line.isHeading ? headingColor : (run.isBold ? cyan : Color.WHITE);
                     int rLen = run.text.length();
-                    if (drawnChars + rLen <= localReadLimit) {
+                    if (drawnChars + rLen <= wholeRead) {
                         p.setColor(yellow);
                         canvas.drawText(run.text, x, y, p);
-                    } else if (drawnChars >= localReadLimit) {
-                        p.setColor(run.isBold ? cyan : Color.WHITE);
+                    } else if (drawnChars > wholeRead) {
+                        p.setColor(unreadCol);
                         canvas.drawText(run.text, x, y, p);
                     } else {
-                        int split = localReadLimit - drawnChars;
-                        String readPart = run.text.substring(0, split);
-                        String unreadPart = run.text.substring(split);
-                        p.setColor(yellow);
-                        canvas.drawText(readPart, x, y, p);
-                        float rw = p.measureText(readPart);
-                        p.setColor(run.isBold ? cyan : Color.WHITE);
-                        canvas.drawText(unreadPart, x + rw, y, p);
+                        int split = Math.max(0, wholeRead - drawnChars);
+                        if (split > 0) {
+                            String readPart = run.text.substring(0, split);
+                            p.setColor(yellow);
+                            canvas.drawText(readPart, x, y, p);
+                            x += p.measureText(readPart);
+                        }
+                        if (split < rLen) {
+                            String edgeChar = run.text.substring(split, split + 1);
+                            p.setColor(blendColor(unreadCol, yellow, edgeFrac));
+                            canvas.drawText(edgeChar, x, y, p);
+                            x += p.measureText(edgeChar);
+                            if (split + 1 < rLen) {
+                                String rest = run.text.substring(split + 1);
+                                p.setColor(unreadCol);
+                                canvas.drawText(rest, x, y, p);
+                            }
+                        }
+                        drawnChars += rLen;
+                        continue;
                     }
                     x += run.width;
                     drawnChars += rLen;
@@ -430,6 +596,9 @@ public class PrompterCanvasView extends View {
 
         if (isMirror) {
             canvas.restore();
+        }
+        if (needMoreAnim) {
+            postInvalidateOnAnimation();
         }
     }
 }

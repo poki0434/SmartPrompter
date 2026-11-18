@@ -50,7 +50,6 @@ public class DraftFileHelper {
         String s = raw.replace("\r\n", "\n");
         s = s.replaceAll("!\\[[^\\]]*\\]\\([^)]*\\)", "");
         s = s.replaceAll("\\[([^\\]]+)\\]\\([^)]*\\)", "$1");
-        s = s.replaceAll("(?m)^\\s{0,3}#{1,6}\\s+", "");
         s = s.replaceAll("(?m)^\\s{0,3}>\\s?", "");
         s = s.replaceAll("(?m)^\\s{0,3}([-*+]|\\d+\\.)\\s+", "");
         s = s.replaceAll("(?m)^\\s*([-*_]){3,}\\s*$", "");

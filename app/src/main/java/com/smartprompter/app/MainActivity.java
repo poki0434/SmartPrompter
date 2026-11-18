@@ -139,6 +139,10 @@ public class MainActivity extends AppCompatActivity {
     // 三级：提词控件
     private View viewFocusLine;
     private PrompterCanvasView prompterCanvasView;
+    private SeekBar seekPrompterProgress;
+    private TextView tvProgressPercent;
+    private TextView tvChapterBubble;
+    private boolean isUserSeekingProgress = false;
     private TextView tvPrompterHud;
     private HorizontalScrollView layoutFloatingBar;
     private LinearLayout layoutFloatingBarInner;
@@ -244,6 +248,7 @@ public class MainActivity extends AppCompatActivity {
             System.exit(1);
         });
         super.onCreate(savedInstanceState);
+        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         force60HzRefreshRate();
         setContentView(R.layout.activity_main);
@@ -255,6 +260,7 @@ public class MainActivity extends AppCompatActivity {
         setupEventListeners();
         renderDraftList();
         showLastCrashIfAny();
+        restorePrompterSessionIfNeeded();
     }
 
     private void showLastCrashIfAny() {
@@ -304,6 +310,9 @@ public class MainActivity extends AppCompatActivity {
 
         viewFocusLine = findViewById(R.id.viewFocusLine);
         prompterCanvasView = findViewById(R.id.prompterCanvasView);
+        seekPrompterProgress = findViewById(R.id.seekPrompterProgress);
+        tvProgressPercent = findViewById(R.id.tvProgressPercent);
+        tvChapterBubble = findViewById(R.id.tvChapterBubble);
         prompterCanvasView.setInteractionListener(new PrompterCanvasView.OnPrompterInteractionListener() {
             @Override
             public void onSingleTap() {
@@ -332,6 +341,15 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onReachBottom() {
                 pausePrompter("台词结束");
+            }
+            @Override
+            public void onScrollProgress(float progress01, String currentChapterTitle) {
+                if (!isUserSeekingProgress && seekPrompterProgress != null) {
+                    seekPrompterProgress.setProgress(Math.round(progress01 * 1000f));
+                }
+                if (tvProgressPercent != null) {
+                    tvProgressPercent.setText(Math.round(progress01 * 100f) + "%");
+                }
             }
         });
         tvPrompterHud = findViewById(R.id.tvPrompterHud);
@@ -633,6 +651,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void finishBackToDraftList() {
+        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
         renderDraftList();
         layoutEditor.setVisibility(View.GONE);
         layoutDraftList.setVisibility(View.VISIBLE);
@@ -1040,6 +1059,38 @@ public class MainActivity extends AppCompatActivity {
             wakeFloatingBar();
         });
 
+        if (seekPrompterProgress != null) {
+            seekPrompterProgress.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                @Override
+                public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                    if (!fromUser || !isPrompterActive) return;
+                    float p = progress / 1000f;
+                    prompterCanvasView.seekToProgress(p, false);
+                    String ch = prompterCanvasView.getChapterTitleAtProgress(p);
+                    int pct = Math.round(p * 100f);
+                    if (tvChapterBubble != null) {
+                        tvChapterBubble.setText(ch.isEmpty() ? ("进度 " + pct + "%") : ("📑 " + ch + " (" + pct + "%)"));
+                        tvChapterBubble.setVisibility(View.VISIBLE);
+                    }
+                    wakeFloatingBar();
+                }
+                @Override
+                public void onStartTrackingTouch(SeekBar seekBar) {
+                    isUserSeekingProgress = true;
+                }
+                @Override
+                public void onStopTrackingTouch(SeekBar seekBar) {
+                    isUserSeekingProgress = false;
+                    float p = seekBar.getProgress() / 1000f;
+                    prompterCanvasView.seekToProgress(p, true);
+                    if (tvChapterBubble != null) tvChapterBubble.setVisibility(View.GONE);
+                    if (isVoiceFollow) {
+                        syncHighlightedIndexToTopVisibleLine();
+                    }
+                }
+            });
+        }
+
         seekLineSpacing.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
@@ -1196,6 +1247,7 @@ public class MainActivity extends AppCompatActivity {
         hudHandler.removeCallbacks(memoryWatchdogRunnable);
         if (voiceFollower != null) voiceFollower.release();
         isPrompterActive = false;
+        clearPrompterSessionState();
 
         if (audioManager != null && savedOriginalVolume != -1) {
             try {
@@ -1407,13 +1459,17 @@ public class MainActivity extends AppCompatActivity {
                 if (!isIgnorableChar(ch)) cleanSpoken.append(ch);
             }
             if (cleanSpoken.length() >= 2) {
-                int searchStart = skipPunctuation(highlightedIndex);
-                int searchLimit = Math.min(currentPrompterScript.length(), searchStart + 220);
-                String target = cleanSpoken.substring(0, Math.min(3, cleanSpoken.length()));
-                int matchEnd = findPhraseInWindow(searchStart, searchLimit, target);
-                if (matchEnd >= 0) {
-                    highlightedIndex = skipPunctuation(matchEnd);
-                    advanced = true;
+                int[] visibleRange = prompterCanvasView.getVisibleCharRange();
+                // 严格限制：只允许向后跳到“当前屏幕内”还没读过的台词，绝不往回跳、绝不跳出屏幕外
+                int searchStart = Math.max(skipPunctuation(highlightedIndex), visibleRange[0]);
+                int searchLimit = Math.min(currentPrompterScript.length(), visibleRange[1]);
+                if (searchStart < searchLimit) {
+                    String target = cleanSpoken.substring(0, Math.min(3, cleanSpoken.length()));
+                    int matchEnd = findPhraseInWindow(searchStart, searchLimit, target);
+                    if (matchEnd > highlightedIndex) {
+                        highlightedIndex = skipPunctuation(matchEnd);
+                        advanced = true;
+                    }
                 }
             }
         }
@@ -1712,7 +1768,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void renderKtvText() {
-        prompterCanvasView.setHighlightedIndex(highlightedIndex);
+        prompterCanvasView.setHighlightedIndex(highlightedIndex, true);
     }
 
     private int findSentenceStart(int offset) {
@@ -1731,7 +1787,7 @@ public class MainActivity extends AppCompatActivity {
     private void jumpAndStartVoiceFollow(int targetOffset) {
         int sentenceStart = findSentenceStart(targetOffset);
         highlightedIndex = sentenceStart;
-        prompterCanvasView.setHighlightedIndex(highlightedIndex);
+        prompterCanvasView.setHighlightedIndex(highlightedIndex, false);
         if (!isVoiceFollow) {
             isVoiceFollow = true;
             cbVoiceFollow.setChecked(true);
@@ -1748,11 +1804,11 @@ public class MainActivity extends AppCompatActivity {
     private void syncHighlightedIndexToTopVisibleLine() {
         int focusOffset = prompterCanvasView.getFocusLineCharOffset();
         highlightedIndex = findSentenceStart(focusOffset);
-        prompterCanvasView.setHighlightedIndex(highlightedIndex);
+        prompterCanvasView.setHighlightedIndex(highlightedIndex, false);
     }
 
     private void scrollToHighlightedLine() {
-        prompterCanvasView.scrollToCharOffset(highlightedIndex);
+        prompterCanvasView.smoothScrollToCharOffset(highlightedIndex);
     }
 
     private void adjustFontSize(int delta) {
@@ -1861,11 +1917,70 @@ public class MainActivity extends AppCompatActivity {
         }
     };
 
+
+    private void savePrompterSessionState() {
+        getSharedPreferences(PREF_NAME, MODE_PRIVATE).edit()
+                .putBoolean("prompter_session_active", isPrompterActive)
+                .putInt("prompter_session_draft_idx", currentDraftIndex)
+                .putFloat("prompter_session_scroll_y", prompterCanvasView != null ? prompterCanvasView.getScrollYPos() : 0f)
+                .putInt("prompter_session_highlight_idx", highlightedIndex)
+                .putBoolean("prompter_session_landscape", isLandscape)
+                .apply();
+    }
+
+    private void clearPrompterSessionState() {
+        getSharedPreferences(PREF_NAME, MODE_PRIVATE).edit()
+                .putBoolean("prompter_session_active", false)
+                .apply();
+    }
+
+    private void restorePrompterSessionIfNeeded() {
+        SharedPreferences sp = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
+        if (!sp.getBoolean("prompter_session_active", false)) return;
+        int dIdx = sp.getInt("prompter_session_draft_idx", 0);
+        float savedScrollY = sp.getFloat("prompter_session_scroll_y", 0f);
+        int savedHighlight = sp.getInt("prompter_session_highlight_idx", 0);
+        boolean savedLand = sp.getBoolean("prompter_session_landscape", true);
+        if (dIdx >= 0 && dIdx < drafts.size()) {
+            openDraft(dIdx);
+            openPrompter();
+            if (!savedLand) {
+                isLandscape = false;
+                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+            }
+            prompterCanvasView.post(() -> {
+                highlightedIndex = savedHighlight;
+                prompterCanvasView.restoreState(savedScrollY, savedHighlight);
+            });
+        } else {
+            clearPrompterSessionState();
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        if (isPrompterActive) {
+            savePrompterSessionState();
+        }
+    }
+
     @Override
     protected void onResume() {
         super.onResume();
         force60HzRefreshRate();
         requestExclusiveAudioFocus();
+        if (!isPrompterActive) {
+            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+        } else {
+            setRequestedOrientation(isLandscape
+                    ? ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                    : ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+            getWindow().getDecorView().setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_FULLSCREEN
+                            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                            | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+        }
         if (mediaSession != null) {
             mediaSession.setActive(true);
             updatePlaybackState(PlaybackStateCompat.STATE_PLAYING);
