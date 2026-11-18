@@ -374,17 +374,10 @@
         android:background="#000000"
         android:visibility="gone">
 
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/prompterRecyclerView"
+        <com.smartprompter.app.PrompterCanvasView
+            android:id="@+id/prompterCanvasView"
             android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:clipToPadding="false"
-            android:paddingTop="200dp"
-            android:paddingBottom="450dp"
-            android:paddingStart="28dp"
-            android:paddingEnd="28dp"
-            android:overScrollMode="never"
-            android:scrollbars="none" />
+            android:layout_height="match_parent" />
 
         <View
             android:id="@+id/viewFocusLine"

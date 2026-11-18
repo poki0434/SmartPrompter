@@ -138,9 +138,7 @@ public class MainActivity extends AppCompatActivity {
 
     // 三级：提词控件
     private View viewFocusLine;
-    private RecyclerView prompterRecyclerView;
-    private LinearLayoutManager prompterLayoutManager;
-    private ChunkAdapter chunkAdapter;
+    private PrompterCanvasView prompterCanvasView;
     private TextView tvPrompterHud;
     private HorizontalScrollView layoutFloatingBar;
     private LinearLayout layoutFloatingBarInner;
@@ -305,15 +303,37 @@ public class MainActivity extends AppCompatActivity {
         tvRemoteSignalBadge = findViewById(R.id.tvRemoteSignalBadge);
 
         viewFocusLine = findViewById(R.id.viewFocusLine);
-        prompterRecyclerView = findViewById(R.id.prompterRecyclerView);
-        prompterLayoutManager = new LinearLayoutManager(this);
-        prompterLayoutManager.setItemPrefetchEnabled(false);
-        prompterRecyclerView.setLayoutManager(prompterLayoutManager);
-        prompterRecyclerView.setItemAnimator(null);
-        prompterRecyclerView.setItemViewCacheSize(2);
-        prompterRecyclerView.setLayerType(View.LAYER_TYPE_NONE, null);
-        chunkAdapter = new ChunkAdapter();
-        prompterRecyclerView.setAdapter(chunkAdapter);
+        prompterCanvasView = findViewById(R.id.prompterCanvasView);
+        prompterCanvasView.setInteractionListener(new PrompterCanvasView.OnPrompterInteractionListener() {
+            @Override
+            public void onSingleTap() {
+                if (isPrompterActive) {
+                    if (layoutLineSpacingPanel != null && layoutLineSpacingPanel.getVisibility() == View.VISIBLE) {
+                        layoutLineSpacingPanel.setVisibility(View.GONE);
+                        syncToolbarHighlights();
+                    }
+                    togglePrompterPlayPause("点击屏幕");
+                    wakeFloatingBar();
+                }
+            }
+            @Override
+            public void onLongPressOffset(int charOffset) {
+                if (isPrompterActive) {
+                    jumpAndStartVoiceFollow(charOffset);
+                }
+            }
+            @Override
+            public void onUserScrollFinished() {
+                if (isVoiceFollow) {
+                    syncHighlightedIndexToTopVisibleLine();
+                }
+                wakeFloatingBar();
+            }
+            @Override
+            public void onReachBottom() {
+                pausePrompter("台词结束");
+            }
+        });
         tvPrompterHud = findViewById(R.id.tvPrompterHud);
         layoutFloatingBar = findViewById(R.id.layoutFloatingBar);
         layoutFloatingBarInner = findViewById(R.id.layoutFloatingBarInner);
@@ -328,13 +348,7 @@ public class MainActivity extends AppCompatActivity {
         btnPrompterOrientation = findViewById(R.id.btnPrompterOrientation);
         btnPrompterPlayPause = findViewById(R.id.btnPrompterPlayPause);
         tvPrompterSpeedIndicator = findViewById(R.id.tvPrompterSpeedIndicator);
-        prompterRecyclerView.addOnLayoutChangeListener((v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
-            if (isPrompterActive) {
-                prompterRecyclerView.setPivotX((right - left) / 2.0f);
-                prompterRecyclerView.setPivotY((bottom - top) / 2.0f);
-                applyMirror();
-            }
-        });
+
     }
 
     private void loadSavedPreferences() {
@@ -1032,7 +1046,7 @@ public class MainActivity extends AppCompatActivity {
                 currentLineSpacing = 1.00f + (progress * 0.01f);
                 tvLineSpacingVal.setText(String.format(Locale.US, "%.2fx", currentLineSpacing));
                 if (fromUser && isPrompterActive) {
-                    chunkAdapter.notifyDataSetChanged();
+                    prompterCanvasView.setStyleParams(currentFontSize, currentLineSpacing, isAlignLeft, isMirror);
                     wakeFloatingBar();
                 }
             }
@@ -1063,28 +1077,7 @@ public class MainActivity extends AppCompatActivity {
             wakeFloatingBar();
         });
 
-        tapGestureDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
-            @Override
-            public boolean onSingleTapConfirmed(MotionEvent e) {
-                if (isPrompterActive) {
-                    togglePrompterPlayPause("点击屏幕");
-                    wakeFloatingBar();
-                }
-                return true;
-            }
-        });
 
-        prompterRecyclerView.setOnTouchListener((v, event) -> {
-            tapGestureDetector.onTouchEvent(event);
-            if (event.getActionMasked() == MotionEvent.ACTION_UP
-                    || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
-                if (isVoiceFollow) {
-                    syncHighlightedIndexToTopVisibleLine();
-                }
-                wakeFloatingBar();
-            }
-            return false;
-        });
     }
 
     private void updateWordCount() {
@@ -1151,20 +1144,13 @@ public class MainActivity extends AppCompatActivity {
         currentPrompterScript = etScript.getText().toString();
         highlightedIndex = 0;
         scrollRemainder = 0f;
-        buildChunks(currentPrompterScript);
-        chunkAdapter.notifyDataSetChanged();
-        prompterRecyclerView.scrollToPosition(0);
+        prompterCanvasView.setStyleParams(currentFontSize, currentLineSpacing, isAlignLeft, isMirror);
+        prompterCanvasView.setScript(currentPrompterScript);
 
         applyMirror();
         applyAlignment();
         syncToolbarHighlights();
         viewFocusLine.setVisibility(showFocusLine ? View.VISIBLE : View.GONE);
-
-        prompterRecyclerView.post(() -> {
-            prompterRecyclerView.setPivotX(prompterRecyclerView.getWidth() / 2.0f);
-            prompterRecyclerView.setPivotY(prompterRecyclerView.getHeight() / 2.0f);
-            applyMirror();
-        });
         wakeFloatingBar();
         if (isVoiceFollow) {
             isPlaying = false;
@@ -1233,19 +1219,8 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void applyMirror() {
-        if (prompterRecyclerView.getWidth() > 0 && prompterRecyclerView.getHeight() > 0) {
-            prompterRecyclerView.setPivotX(prompterRecyclerView.getWidth() / 2.0f);
-            prompterRecyclerView.setPivotY(prompterRecyclerView.getHeight() / 2.0f);
-        }
-        if (isMirror) {
-            prompterRecyclerView.setScaleX(-1.0f);
-            prompterRecyclerView.setRotation(180f);
-            btnPrompterMirror.setColorFilter(Color.parseColor("#38BDF8"));
-        } else {
-            prompterRecyclerView.setScaleX(1.0f);
-            prompterRecyclerView.setRotation(0f);
-            btnPrompterMirror.setColorFilter(Color.parseColor("#CBD5E1"));
-        }
+        prompterCanvasView.setStyleParams(currentFontSize, currentLineSpacing, isAlignLeft, isMirror);
+        btnPrompterMirror.setColorFilter(isMirror ? Color.parseColor("#38BDF8") : Color.parseColor("#CBD5E1"));
     }
 
     private void updateAiButtonStyle() {
@@ -1291,7 +1266,7 @@ public class MainActivity extends AppCompatActivity {
             btnPrompterAlign.setImageResource(R.drawable.ic_align_center);
             btnPrompterAlign.setColorFilter(Color.parseColor("#CBD5E1"));
         }
-        chunkAdapter.notifyDataSetChanged();
+        prompterCanvasView.setStyleParams(currentFontSize, currentLineSpacing, isAlignLeft, isMirror);
     }
 
     private void startPrompter(String source) {
@@ -1336,8 +1311,7 @@ public class MainActivity extends AppCompatActivity {
     private void restartPrompter() {
         highlightedIndex = 0;
         scrollRemainder = 0f;
-        prompterRecyclerView.scrollToPosition(0);
-        chunkAdapter.notifyDataSetChanged();
+        prompterCanvasView.resetToTop();
         showHud("⏮ 回到文稿开头");
     }
 
@@ -1738,13 +1712,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void renderKtvText() {
-        if (scriptChunks.isEmpty()) return;
-        int oldPos = activeChunkPos;
-        int newPos = findChunkForOffset(highlightedIndex);
-        activeChunkPos = newPos;
-        int from = Math.min(oldPos, newPos);
-        int to = Math.max(oldPos, newPos);
-        chunkAdapter.notifyItemRangeChanged(from, to - from + 1);
+        prompterCanvasView.setHighlightedIndex(highlightedIndex);
     }
 
     private int findSentenceStart(int offset) {
@@ -1763,8 +1731,7 @@ public class MainActivity extends AppCompatActivity {
     private void jumpAndStartVoiceFollow(int targetOffset) {
         int sentenceStart = findSentenceStart(targetOffset);
         highlightedIndex = sentenceStart;
-        activeChunkPos = findChunkForOffset(highlightedIndex);
-        chunkAdapter.notifyDataSetChanged();
+        prompterCanvasView.setHighlightedIndex(highlightedIndex);
         if (!isVoiceFollow) {
             isVoiceFollow = true;
             cbVoiceFollow.setChecked(true);
@@ -1779,39 +1746,20 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void syncHighlightedIndexToTopVisibleLine() {
-        if (prompterLayoutManager == null || scriptChunks.isEmpty()) return;
-        int firstPos = prompterLayoutManager.findFirstVisibleItemPosition();
-        int lastPos = prompterLayoutManager.findLastVisibleItemPosition();
-        if (firstPos < 0) return;
-        int focusY = (int) (prompterRecyclerView.getHeight() * 0.28f);
-        int chosenPos = firstPos;
-        int bestDist = Integer.MAX_VALUE;
-        for (int p = firstPos; p <= lastPos && p < scriptChunks.size(); p++) {
-            View child = prompterLayoutManager.findViewByPosition(p);
-            if (child != null) {
-                int dist = Math.abs(child.getTop() - focusY);
-                if (dist < bestDist) {
-                    bestDist = dist;
-                    chosenPos = p;
-                }
-            }
-        }
-        highlightedIndex = findSentenceStart(scriptChunks.get(chosenPos).start);
-        activeChunkPos = findChunkForOffset(highlightedIndex);
-        chunkAdapter.notifyDataSetChanged();
+        int focusOffset = prompterCanvasView.getFocusLineCharOffset();
+        highlightedIndex = findSentenceStart(focusOffset);
+        prompterCanvasView.setHighlightedIndex(highlightedIndex);
     }
 
     private void scrollToHighlightedLine() {
-        if (prompterLayoutManager == null || scriptChunks.isEmpty()) return;
-        int pos = findChunkForOffset(highlightedIndex);
-        prompterLayoutManager.scrollToPositionWithOffset(pos, 0);
+        prompterCanvasView.scrollToCharOffset(highlightedIndex);
     }
 
     private void adjustFontSize(int delta) {
         currentFontSize = Math.max(24, Math.min(90, currentFontSize + delta));
         seekFontSize.setProgress(currentFontSize);
         tvFontSizeValue.setText(currentFontSize + " sp");
-        chunkAdapter.notifyDataSetChanged();
+        prompterCanvasView.setStyleParams(currentFontSize, currentLineSpacing, isAlignLeft, isMirror);
         showHud("🔤 字号: " + currentFontSize + " sp");
         saveSettings();
     }
@@ -1841,25 +1789,11 @@ public class MainActivity extends AppCompatActivity {
             float deltaSeconds = elapsedNanos / 1_000_000_000.0f;
             lastFrameTime = frameTimeNanos;
 
-            if (prompterRecyclerView.getChildCount() == 0 || prompterRecyclerView.getHeight() == 0) {
-                Choreographer.getInstance().postFrameCallback(this);
-                return;
-            }
-
-            int dy = 0;
             if (deltaSeconds > 0f && deltaSeconds < 0.1f) {
-                scrollRemainder += currentSpeed * deltaSeconds;
-                dy = (int) scrollRemainder;
-                if (dy != 0) {
-                    scrollRemainder -= dy;
-                    prompterRecyclerView.scrollBy(0, dy);
+                float dy = currentSpeed * deltaSeconds;
+                if (dy > 0f && !prompterCanvasView.scrollByDelta(dy)) {
+                    return;
                 }
-            }
-
-            if (dy > 0 && prompterRecyclerView.computeVerticalScrollRange() > prompterRecyclerView.getHeight()
-                    && !prompterRecyclerView.canScrollVertically(1)) {
-                pausePrompter("台词结束");
-                return;
             }
 
             Choreographer.getInstance().postFrameCallback(this);
@@ -1885,9 +1819,6 @@ public class MainActivity extends AppCompatActivity {
                 long used = rt.totalMemory() - rt.freeMemory();
                 long max = rt.maxMemory();
                 if (max > 0 && (used * 100L / max) >= 70L) {
-                    if (prompterRecyclerView != null) {
-                        prompterRecyclerView.getRecycledViewPool().clear();
-                    }
                     if (!isVoiceFollow) {
                         VoiceFollower.Companion.releaseSharedModelIfIdle();
                     }
