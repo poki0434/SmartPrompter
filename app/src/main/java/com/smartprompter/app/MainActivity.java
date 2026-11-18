@@ -13,10 +13,8 @@ import android.graphics.drawable.GradientDrawable;
 import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
-import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
-import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.os.Bundle;
 import android.os.Handler;
@@ -24,10 +22,10 @@ import android.os.Looper;
 import android.support.v4.media.session.MediaSessionCompat;
 import android.support.v4.media.session.PlaybackStateCompat;
 import android.text.Editable;
-import android.text.Layout;
 import android.text.Spannable;
 import android.text.SpannableString;
 import android.text.style.ForegroundColorSpan;
+import android.text.style.StyleSpan;
 import android.text.TextWatcher;
 import android.view.Choreographer;
 import android.view.Gravity;
@@ -35,6 +33,7 @@ import android.view.GestureDetector;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.CheckBox;
@@ -43,7 +42,6 @@ import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
-import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -51,6 +49,8 @@ import android.widget.Toast;
 import androidx.appcompat.app.AlertDialog;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.recyclerview.widget.LinearLayoutManager;
+import androidx.recyclerview.widget.RecyclerView;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import java.text.SimpleDateFormat;
@@ -60,12 +60,7 @@ import java.util.Locale;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
 
@@ -85,14 +80,6 @@ public class MainActivity extends AppCompatActivity {
     private static final String KEY_FOCUS_LINE = "key_focus_line";
     private static final String KEY_ALIGN_LEFT = "key_align_left";
     private static final String KEY_VOICE_FOLLOW = "key_voice_follow";
-    private static final String KEY_COUNTDOWN = "key_countdown";
-
-    private static final int REQ_IMPORT = 300;
-    private static final int REQ_EXPORT = 301;
-
-    private static final int EXPORT_TXT = 0;
-    private static final int EXPORT_MD = 1;
-    private static final int EXPORT_DOCX = 2;
 
     private static final int SPEED_STEP = 10;
 
@@ -107,17 +94,11 @@ public class MainActivity extends AppCompatActivity {
         String id;
         String title;
         String content;
-        boolean pinned;
 
         Draft(String id, String title, String content) {
-            this(id, title, content, false);
-        }
-
-        Draft(String id, String title, String content, boolean pinned) {
             this.id = id;
             this.title = title;
             this.content = content;
-            this.pinned = pinned;
         }
     }
 
@@ -141,24 +122,20 @@ public class MainActivity extends AppCompatActivity {
     private CheckBox cbMirror;
     private CheckBox cbFocusLine;
     private CheckBox cbVoiceFollow;
-    private CheckBox cbCountdown;
-    private EditText etSearch;
-    private Button btnImport;
-    private Button btnExport;
-    private TextView tvCountdown;
     private TextView tvRemoteSignalBadge;
 
     // 三级：提词控件
     private View viewFocusLine;
-    private TextView tvPrompterText;
-    private LinearLayout framePrompterContent;
-    private ScrollView prompterScrollContainer;
+    private RecyclerView prompterRecyclerView;
+    private LinearLayoutManager prompterLayoutManager;
+    private ChunkAdapter chunkAdapter;
     private TextView tvPrompterHud;
     private HorizontalScrollView layoutFloatingBar;
     private LinearLayout layoutFloatingBarInner;
     private ImageButton btnPrompterMirror;
     private ImageButton btnPrompterAlign;
     private Button btnPrompterAi;
+    private ImageButton btnPrompterOrientation;
     private ImageButton btnPrompterPlayPause;
     private TextView tvPrompterSpeedIndicator;
 
@@ -176,19 +153,15 @@ public class MainActivity extends AppCompatActivity {
     private boolean showFocusLine = true;
     private boolean isAlignLeft = false;
     private boolean isVoiceFollow = false;
-    private boolean countdownEnabled = false;
-    private String currentQuery = "";
-    private int pendingExportFormat = EXPORT_TXT;
     private int highlightedIndex = 0;
     private final ForegroundColorSpan ktvHighlightSpan = new ForegroundColorSpan(Color.parseColor("#FACC15"));
-    private final ForegroundColorSpan focusSpan = new ForegroundColorSpan(Color.parseColor("#FB923C"));
     private String currentPrompterScript = "";
     private VoiceFollower voiceFollower;
     private boolean isPlaying = false;
     private boolean isPrompterActive = false;
     private boolean isLandscape = true;
 
-    private float currentScrollY = 0f;
+    private float scrollRemainder = 0f;
     private long lastFrameTime = 0;
 
     // 蓝牙耳机 MediaSession 与极微底噪保活音轨
@@ -202,20 +175,23 @@ public class MainActivity extends AppCompatActivity {
     private long lastMediaKeyTime = 0;
 
     private GestureDetector tapGestureDetector;
-    private float lastTouchY = 0f;
+
 
     private final Handler hudHandler = new Handler(Looper.getMainLooper());
 
-    // 草稿防抖存盘：输入时延时批量落盘，避免每敲一键全量序列化
-    private final Handler saveHandler = new Handler(Looper.getMainLooper());
-    private Runnable saveDraftRunnable;
-
-    private final Handler countdownHandler = new Handler(Looper.getMainLooper());
-    private Runnable countdownRunnable;
-    private int countdownRemain = 0;
-
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        Thread.setDefaultUncaughtExceptionHandler((t, e) -> {
+            try {
+                String trace = android.util.Log.getStackTraceString(e);
+                getSharedPreferences("CrashPrefs", MODE_PRIVATE)
+                        .edit()
+                        .putString("last_crash", trace)
+                        .commit();
+            } catch (Throwable ignored) {}
+            android.os.Process.killProcess(android.os.Process.myPid());
+            System.exit(1);
+        });
         super.onCreate(savedInstanceState);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         setContentView(R.layout.activity_main);
@@ -226,6 +202,28 @@ public class MainActivity extends AppCompatActivity {
         setupVolumeReceiver();
         setupEventListeners();
         renderDraftList();
+        showLastCrashIfAny();
+    }
+
+    private void showLastCrashIfAny() {
+        SharedPreferences cp = getSharedPreferences("CrashPrefs", MODE_PRIVATE);
+        String crash = cp.getString("last_crash", null);
+        if (crash != null && !crash.isEmpty()) {
+            cp.edit().remove("last_crash").apply();
+            String preview = crash.length() > 1200 ? crash.substring(0, 1200) + "..." : crash;
+            new AlertDialog.Builder(this)
+                    .setTitle("检测到上次闪退日志")
+                    .setMessage(preview)
+                    .setPositiveButton("复制日志", (d, w) -> {
+                        android.content.ClipboardManager cm = (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                        if (cm != null) {
+                            cm.setPrimaryClip(android.content.ClipData.newPlainText("crash", crash));
+                            Toast.makeText(this, "已复制完整闪退日志", Toast.LENGTH_SHORT).show();
+                        }
+                    })
+                    .setNegativeButton("关闭", null)
+                    .show();
+        }
     }
 
     private void initViews() {
@@ -246,29 +244,30 @@ public class MainActivity extends AppCompatActivity {
         cbMirror = findViewById(R.id.cbMirror);
         cbFocusLine = findViewById(R.id.cbFocusLine);
         cbVoiceFollow = findViewById(R.id.cbVoiceFollow);
-        cbCountdown = findViewById(R.id.cbCountdown);
-        etSearch = findViewById(R.id.etSearch);
-        btnImport = findViewById(R.id.btnImport);
-        btnExport = findViewById(R.id.btnExport);
-        tvCountdown = findViewById(R.id.tvCountdown);
         tvRemoteSignalBadge = findViewById(R.id.tvRemoteSignalBadge);
 
         viewFocusLine = findViewById(R.id.viewFocusLine);
-        tvPrompterText = findViewById(R.id.tvPrompterText);
-        framePrompterContent = findViewById(R.id.framePrompterContent);
-        prompterScrollContainer = findViewById(R.id.prompterScrollContainer);
+        prompterRecyclerView = findViewById(R.id.prompterRecyclerView);
+        prompterLayoutManager = new LinearLayoutManager(this);
+        prompterRecyclerView.setLayoutManager(prompterLayoutManager);
+        prompterRecyclerView.setItemAnimator(null);
+        prompterRecyclerView.setItemViewCacheSize(4);
+        prompterRecyclerView.setLayerType(View.LAYER_TYPE_NONE, null);
+        chunkAdapter = new ChunkAdapter();
+        prompterRecyclerView.setAdapter(chunkAdapter);
         tvPrompterHud = findViewById(R.id.tvPrompterHud);
         layoutFloatingBar = findViewById(R.id.layoutFloatingBar);
         layoutFloatingBarInner = findViewById(R.id.layoutFloatingBarInner);
         btnPrompterMirror = findViewById(R.id.btnPrompterMirror);
         btnPrompterAlign = findViewById(R.id.btnPrompterAlign);
         btnPrompterAi = findViewById(R.id.btnPrompterAi);
+        btnPrompterOrientation = findViewById(R.id.btnPrompterOrientation);
         btnPrompterPlayPause = findViewById(R.id.btnPrompterPlayPause);
         tvPrompterSpeedIndicator = findViewById(R.id.tvPrompterSpeedIndicator);
-        prompterScrollContainer.addOnLayoutChangeListener((v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
+        prompterRecyclerView.addOnLayoutChangeListener((v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
             if (isPrompterActive) {
-                prompterScrollContainer.setPivotX((right - left) / 2.0f);
-                prompterScrollContainer.setPivotY((bottom - top) / 2.0f);
+                prompterRecyclerView.setPivotX((right - left) / 2.0f);
+                prompterRecyclerView.setPivotY((bottom - top) / 2.0f);
                 applyMirror();
             }
         });
@@ -282,7 +281,6 @@ public class MainActivity extends AppCompatActivity {
         showFocusLine = sp.getBoolean(KEY_FOCUS_LINE, true);
         isAlignLeft = sp.getBoolean(KEY_ALIGN_LEFT, false);
         isVoiceFollow = sp.getBoolean(KEY_VOICE_FOLLOW, false);
-        countdownEnabled = sp.getBoolean(KEY_COUNTDOWN, false);
 
         seekSpeed.setProgress(currentSpeed);
         tvSpeedValue.setText(currentSpeed + " px/s");
@@ -294,7 +292,6 @@ public class MainActivity extends AppCompatActivity {
         cbMirror.setChecked(isMirror);
         cbFocusLine.setChecked(showFocusLine);
         cbVoiceFollow.setChecked(isVoiceFollow);
-        cbCountdown.setChecked(countdownEnabled);
 
         drafts.clear();
         String json = sp.getString(KEY_DRAFTS_JSON, "");
@@ -306,8 +303,7 @@ public class MainActivity extends AppCompatActivity {
                     drafts.add(new Draft(
                             obj.optString("id", UUID.randomUUID().toString()),
                             obj.optString("title", "文档" + (i + 1)),
-                            obj.optString("content", ""),
-                            obj.optBoolean("pinned", false)
+                            obj.optString("content", "")
                     ));
                 }
             } catch (Exception ignored) {}
@@ -327,7 +323,6 @@ public class MainActivity extends AppCompatActivity {
                 obj.put("id", d.id);
                 obj.put("title", d.title);
                 obj.put("content", d.content);
-                obj.put("pinned", d.pinned);
                 arr.put(obj);
             }
             getSharedPreferences(PREF_NAME, MODE_PRIVATE)
@@ -345,7 +340,6 @@ public class MainActivity extends AppCompatActivity {
                 .putBoolean(KEY_FOCUS_LINE, showFocusLine)
                 .putBoolean(KEY_ALIGN_LEFT, isAlignLeft)
                 .putBoolean(KEY_VOICE_FOLLOW, isVoiceFollow)
-                .putBoolean(KEY_COUNTDOWN, countdownEnabled)
                 .apply();
     }
 
@@ -355,25 +349,15 @@ public class MainActivity extends AppCompatActivity {
 
     private void renderDraftList() {
         draftListContainer.removeAllViews();
-
-        String q = currentQuery == null ? "" : currentQuery.trim().toLowerCase(Locale.getDefault());
-        List<Draft> visible = new ArrayList<>();
-        for (Draft d : drafts) {
-            String t = d.title.toLowerCase(Locale.getDefault());
-            String c = d.content.toLowerCase(Locale.getDefault());
-            if (q.isEmpty() || t.contains(q) || c.contains(q)) visible.add(d);
-        }
-        // 置顶在前；Collections.sort 为稳定排序，保持未置顶项原有相对顺序
-        Collections.sort(visible, (a, b) -> Boolean.compare(b.pinned, a.pinned));
-
-        tvDraftCount.setText("共 " + drafts.size() + " 篇提词文稿" + (q.isEmpty() ? "" : " · 筛选 " + visible.size() + " 篇"));
+        tvDraftCount.setText("共 " + drafts.size() + " 篇提词文稿");
 
         float density = getResources().getDisplayMetrics().density;
         int pad = (int) (14 * density);
         int marginBottom = (int) (12 * density);
 
-        for (Draft draft : visible) {
-            final int index = drafts.indexOf(draft);
+        for (int i = 0; i < drafts.size(); i++) {
+            final int index = i;
+            Draft draft = drafts.get(i);
 
             LinearLayout card = new LinearLayout(this);
             card.setOrientation(LinearLayout.VERTICAL);
@@ -399,7 +383,7 @@ public class MainActivity extends AppCompatActivity {
 
             TextView tvTitle = new TextView(this);
             tvTitle.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-            tvTitle.setText((draft.pinned ? "📌 " : "") + (draft.title.isEmpty() ? "未命名草稿" : draft.title));
+            tvTitle.setText(draft.title.isEmpty() ? "未命名草稿" : draft.title);
             tvTitle.setTextColor(Color.WHITE);
             tvTitle.setTextSize(16f);
             tvTitle.setTypeface(null, android.graphics.Typeface.BOLD);
@@ -454,13 +438,6 @@ public class MainActivity extends AppCompatActivity {
             card.addView(tvMeta);
 
             card.setOnClickListener(v -> openDraftInEditor(index));
-            card.setOnLongClickListener(v -> {
-                draft.pinned = !draft.pinned;
-                saveDrafts();
-                renderDraftList();
-                Toast.makeText(this, draft.pinned ? "已置顶到列表顶部" : "已取消置顶", Toast.LENGTH_SHORT).show();
-                return true;
-            });
             draftListContainer.addView(card);
         }
     }
@@ -527,7 +504,6 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void finishBackToDraftList() {
-        flushSaveDraft();
         renderDraftList();
         layoutEditor.setVisibility(View.GONE);
         layoutDraftList.setVisibility(View.VISIBLE);
@@ -550,196 +526,6 @@ public class MainActivity extends AppCompatActivity {
         originalDraftTitle = title;
         originalDraftContent = content;
         saveDrafts();
-    }
-
-    private void scheduleSaveDraft() {
-        if (saveDraftRunnable != null) saveHandler.removeCallbacks(saveDraftRunnable);
-        saveDraftRunnable = this::saveCurrentDraftFromEditor;
-        saveHandler.postDelayed(saveDraftRunnable, 500);
-    }
-
-    private void flushSaveDraft() {
-        if (saveDraftRunnable != null) {
-            saveHandler.removeCallbacks(saveDraftRunnable);
-            saveDraftRunnable.run();
-            saveDraftRunnable = null;
-        }
-    }
-
-    // =========================================================================
-    // 文稿导入 / 导出（系统 SAF，无需存储权限与 FileProvider）
-    // =========================================================================
-
-    private void pickImportFile() {
-        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("*/*");
-        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{
-                "text/plain", "text/markdown", "text/x-markdown",
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        });
-        startActivityForResult(intent, REQ_IMPORT);
-    }
-
-    private void pickExportFormat() {
-        String content = etScript.getText().toString();
-        if (content.trim().isEmpty()) {
-            Toast.makeText(this, "文稿为空，无可导出内容", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        String[] items = {"TXT 纯文本 (.txt)", "Markdown (.md)", "Word 文档 (.docx)"};
-        new AlertDialog.Builder(this)
-                .setTitle("导出为")
-                .setItems(items, (dialog, which) -> {
-                    pendingExportFormat = which;
-                    createExportDocument(which);
-                })
-                .show();
-    }
-
-    private void createExportDocument(int format) {
-        String title = etDraftTitle.getText().toString().trim();
-        if (title.isEmpty()) title = "提词文稿";
-        String mime;
-        String ext;
-        if (format == EXPORT_DOCX) {
-            mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-            ext = ".docx";
-        } else if (format == EXPORT_MD) {
-            mime = "text/markdown";
-            ext = ".md";
-        } else {
-            mime = "text/plain";
-            ext = ".txt";
-        }
-        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
-        intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType(mime);
-        intent.putExtra(Intent.EXTRA_TITLE, title + ext);
-        startActivityForResult(intent, REQ_EXPORT);
-    }
-
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
-        Uri uri = data.getData();
-        if (requestCode == REQ_IMPORT) {
-            importFromUri(uri);
-        } else if (requestCode == REQ_EXPORT) {
-            exportToUri(uri);
-        }
-    }
-
-    private void importFromUri(Uri uri) {
-        String name = queryDisplayName(uri);
-        String lower = name.toLowerCase(Locale.getDefault());
-        String text;
-        try (InputStream in = getContentResolver().openInputStream(uri)) {
-            if (in == null) {
-                Toast.makeText(this, "无法读取所选文件", Toast.LENGTH_SHORT).show();
-                return;
-            }
-            if (lower.endsWith(".docx")) {
-                text = DocxUtils.readTextFromDocx(in);
-            } else {
-                text = DocxUtils.stripMarkdown(DocxUtils.readText(in));
-            }
-        } catch (Exception e) {
-            Toast.makeText(this, "导入失败：文件无法解析", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        if (text == null || text.trim().isEmpty()) {
-            Toast.makeText(this, "未从文件中读到有效内容", Toast.LENGTH_SHORT).show();
-            return;
-        }
-
-        isUpdatingEditorFields = true;
-        etScript.setText(text);
-        if (etDraftTitle.getText().toString().trim().isEmpty()) {
-            String base = name;
-            int dot = base.lastIndexOf('.');
-            if (dot > 0) base = base.substring(0, dot);
-            etDraftTitle.setText(base);
-        }
-        isUpdatingEditorFields = false;
-        updateWordCount();
-        scheduleSaveDraft();
-        Toast.makeText(this, "导入成功", Toast.LENGTH_SHORT).show();
-    }
-
-    private void exportToUri(Uri uri) {
-        String content = etScript.getText().toString();
-        String title = etDraftTitle.getText().toString().trim();
-        if (title.isEmpty()) title = "提词文稿";
-        try (OutputStream out = getContentResolver().openOutputStream(uri)) {
-            if (out == null) {
-                Toast.makeText(this, "无法写入所选位置", Toast.LENGTH_SHORT).show();
-                return;
-            }
-            if (pendingExportFormat == EXPORT_DOCX) {
-                DocxUtils.writeDocx(out, title, content);
-            } else if (pendingExportFormat == EXPORT_MD) {
-                String md = "# " + title + "\n\n" + content;
-                out.write(md.getBytes(StandardCharsets.UTF_8));
-            } else {
-                out.write(content.getBytes(StandardCharsets.UTF_8));
-            }
-            out.flush();
-            Toast.makeText(this, "导出成功", Toast.LENGTH_SHORT).show();
-        } catch (Exception e) {
-            Toast.makeText(this, "导出失败：写入出错", Toast.LENGTH_SHORT).show();
-        }
-    }
-
-    private String queryDisplayName(Uri uri) {
-        String name = null;
-        Cursor cursor = null;
-        try {
-            cursor = getContentResolver().query(uri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null);
-            if (cursor != null && cursor.moveToFirst()) {
-                int idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
-                if (idx >= 0) name = cursor.getString(idx);
-            }
-        } catch (Exception ignored) {
-        } finally {
-            if (cursor != null) cursor.close();
-        }
-        if (name == null || name.isEmpty()) name = uri.getLastPathSegment();
-        return name == null ? "导入文稿" : name;
-    }
-
-    // =========================================================================
-    // 开拍前 3 秒倒计时
-    // =========================================================================
-
-    private void startCountdownThenPrompter() {
-        countdownRemain = 3;
-        tvCountdown.setVisibility(View.VISIBLE);
-        tvCountdown.setText(String.valueOf(countdownRemain));
-        countdownRunnable = new Runnable() {
-            @Override
-            public void run() {
-                countdownRemain--;
-                if (countdownRemain <= 0) {
-                    tvCountdown.setVisibility(View.GONE);
-                    startPrompter("倒计时结束");
-                } else {
-                    tvCountdown.setText(String.valueOf(countdownRemain));
-                    countdownHandler.postDelayed(this, 1000);
-                }
-            }
-        };
-        countdownHandler.postDelayed(countdownRunnable, 1000);
-    }
-
-    private void cancelCountdown() {
-        if (countdownRunnable != null) {
-            countdownHandler.removeCallbacks(countdownRunnable);
-            countdownRunnable = null;
-        }
-        countdownRemain = 0;
-        if (tvCountdown != null) tvCountdown.setVisibility(View.GONE);
     }
 
     // =========================================================================
@@ -956,21 +742,12 @@ public class MainActivity extends AppCompatActivity {
         findViewById(R.id.btnNewDraft).setOnClickListener(v -> createNewDraft());
         findViewById(R.id.btnBackToDrafts).setOnClickListener(v -> backToDraftList());
 
-        etSearch.addTextChangedListener(new TextWatcher() {
-            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
-            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
-                currentQuery = s.toString();
-                renderDraftList();
-            }
-            @Override public void afterTextChanged(Editable s) {}
-        });
-
         TextWatcher draftWatcher = new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
             @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
                 if (!isUpdatingEditorFields) {
                     updateWordCount();
-                    scheduleSaveDraft();
+                    saveCurrentDraftFromEditor();
                 }
             }
             @Override public void afterTextChanged(Editable s) {}
@@ -987,9 +764,6 @@ public class MainActivity extends AppCompatActivity {
             etScript.setText("");
             Toast.makeText(this, "已清空文稿", Toast.LENGTH_SHORT).show();
         });
-
-        btnImport.setOnClickListener(v -> pickImportFile());
-        btnExport.setOnClickListener(v -> pickExportFormat());
 
         seekSpeed.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
@@ -1027,11 +801,6 @@ public class MainActivity extends AppCompatActivity {
             saveSettings();
         });
 
-        cbCountdown.setOnCheckedChangeListener((btn, isChecked) -> {
-            countdownEnabled = isChecked;
-            saveSettings();
-        });
-
         findViewById(R.id.btnLaunchPrompter).setOnClickListener(v -> openPrompter());
         findViewById(R.id.btnLaunchFloating).setOnClickListener(v -> launchFloatingPrompter());
         findViewById(R.id.btnPrompterExit).setOnClickListener(v -> exitPrompter());
@@ -1044,7 +813,7 @@ public class MainActivity extends AppCompatActivity {
             cbMirror.setChecked(isMirror);
             applyMirror();
         applyAlignment();
-        updateAiButtonStyle();
+        syncToolbarHighlights();
             saveSettings();
             showHud("🪞 镜像(水平+180°): " + (isMirror ? "开" : "关"));
             wakeFloatingBar();
@@ -1059,33 +828,34 @@ public class MainActivity extends AppCompatActivity {
         });
 
         btnPrompterAi.setOnClickListener(v -> {
+            isVoiceFollow = !isVoiceFollow;
+            cbVoiceFollow.setChecked(isVoiceFollow);
+            saveSettings();
+            syncToolbarHighlights();
             if (isVoiceFollow) {
-                // 关闭跟读（与匀速滚动互斥）
-                closeVoiceFollowInternal();
-                showHud("🎤 AI跟读: 关");
-            } else {
-                // 互斥：开启跟读前先停止匀速滚动
-                isVoiceFollow = true;
-                cbVoiceFollow.setChecked(true);
-                saveSettings();
-                updateAiButtonStyle();
+                // 开启AI跟读时自动暂停匀速滚动
+                isPlaying = true;
                 pausePrompter("切换AI跟读");
                 syncHighlightedIndexToTopVisibleLine();
                 ensureMicPermissionAndInitVoice();
                 showHud("🎤 AI跟读: 开 (已暂停自动滚动)");
+            } else {
+                if (voiceFollower != null) voiceFollower.stopListening();
+                showHud("🎤 AI跟读: 关");
             }
             wakeFloatingBar();
         });
 
-        findViewById(R.id.btnPrompterOrientation).setOnClickListener(v -> {
+        btnPrompterOrientation.setOnClickListener(v -> {
             isLandscape = !isLandscape;
             if (isLandscape) {
                 setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
                 showHud("📱 已切换为横屏");
             } else {
-                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT);
+                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
                 showHud("📱 已切换为竖屏");
             }
+            syncToolbarHighlights();
             updateFloatingBarSpacing();
             wakeFloatingBar();
         });
@@ -1110,31 +880,16 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        prompterScrollContainer.setOnTouchListener((v, event) -> {
+        prompterRecyclerView.setOnTouchListener((v, event) -> {
             tapGestureDetector.onTouchEvent(event);
-
-            switch (event.getActionMasked()) {
-                case MotionEvent.ACTION_DOWN:
-                    lastTouchY = event.getRawY();
-                    break;
-                case MotionEvent.ACTION_MOVE:
-                    float rawY = event.getRawY();
-                    float dy = isMirror ? (rawY - lastTouchY) : (lastTouchY - rawY);
-                    lastTouchY = rawY;
-                    int maxScroll = Math.max(0, framePrompterContent.getHeight() - prompterScrollContainer.getHeight());
-                    currentScrollY = Math.max(0f, Math.min(maxScroll, currentScrollY + dy));
-                    framePrompterContent.setTranslationY(-currentScrollY);
-                    wakeFloatingBar();
-                    break;
-                case MotionEvent.ACTION_UP:
-                case MotionEvent.ACTION_CANCEL:
-                    if (isVoiceFollow) {
-                        syncHighlightedIndexToTopVisibleLine();
-                    }
-                    wakeFloatingBar();
-                    break;
+            if (event.getActionMasked() == MotionEvent.ACTION_UP
+                    || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+                if (isVoiceFollow) {
+                    syncHighlightedIndexToTopVisibleLine();
+                }
+                wakeFloatingBar();
             }
-            return true;
+            return false;
         });
     }
 
@@ -1145,7 +900,6 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void launchFloatingPrompter() {
-        flushSaveDraft();
         saveCurrentDraftFromEditor();
         saveSettings();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
@@ -1166,7 +920,6 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void openPrompter() {
-        flushSaveDraft();
         saveCurrentDraftFromEditor();
         isPrompterActive = true;
         saveSettings();
@@ -1180,8 +933,8 @@ public class MainActivity extends AppCompatActivity {
         }
         if (mediaSession != null) {
             mediaSession.setActive(true);
-            updatePlaybackState(PlaybackStateCompat.STATE_PAUSED);
-        }
+            updatePlaybackState(PlaybackStateCompat.STATE_PLAYING);
+            }
 
         isLandscape = true;
         setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
@@ -1203,41 +956,36 @@ public class MainActivity extends AppCompatActivity {
 
         currentPrompterScript = etScript.getText().toString();
         highlightedIndex = 0;
-        tvPrompterText.setText(new SpannableString(currentPrompterScript), TextView.BufferType.SPANNABLE);
-        tvPrompterText.setTextSize(currentFontSize);
+        scrollRemainder = 0f;
+        buildChunks(currentPrompterScript);
+        chunkAdapter.notifyDataSetChanged();
+        prompterRecyclerView.scrollToPosition(0);
 
         applyMirror();
+        applyAlignment();
+        syncToolbarHighlights();
         viewFocusLine.setVisibility(showFocusLine ? View.VISIBLE : View.GONE);
 
-        currentScrollY = 0f;
-        framePrompterContent.setTranslationY(0f);
-        prompterScrollContainer.scrollTo(0, 0);
-
-        prompterScrollContainer.post(() -> {
-            prompterScrollContainer.setPivotX(prompterScrollContainer.getWidth() / 2.0f);
-            prompterScrollContainer.setPivotY(prompterScrollContainer.getHeight() / 2.0f);
+        prompterRecyclerView.post(() -> {
+            prompterRecyclerView.setPivotX(prompterRecyclerView.getWidth() / 2.0f);
+            prompterRecyclerView.setPivotY(prompterRecyclerView.getHeight() / 2.0f);
             applyMirror();
         });
         wakeFloatingBar();
         if (isVoiceFollow) {
             isPlaying = false;
             btnPrompterPlayPause.setImageResource(android.R.drawable.ic_media_play);
+        syncToolbarHighlights();
             ensureMicPermissionAndInitVoice();
             showHud("🎤 正在启动 AI 严格跟读...");
-        } else if (countdownEnabled) {
-            startCountdownThenPrompter();
         } else {
             startPrompter("开启提词");
         }
     }
 
     private void exitPrompter() {
-        cancelCountdown();
         pausePrompter("退出提词");
-        if (voiceFollower != null) {
-            voiceFollower.release();
-            voiceFollower = null;
-        }
+        if (voiceFollower != null) voiceFollower.stopListening();
         isPrompterActive = false;
 
         if (audioManager != null && savedOriginalVolume != -1) {
@@ -1261,61 +1009,78 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void applyMirror() {
-        if (prompterScrollContainer.getWidth() > 0 && prompterScrollContainer.getHeight() > 0) {
-            prompterScrollContainer.setPivotX(prompterScrollContainer.getWidth() / 2.0f);
-            prompterScrollContainer.setPivotY(prompterScrollContainer.getHeight() / 2.0f);
+        if (prompterRecyclerView.getWidth() > 0 && prompterRecyclerView.getHeight() > 0) {
+            prompterRecyclerView.setPivotX(prompterRecyclerView.getWidth() / 2.0f);
+            prompterRecyclerView.setPivotY(prompterRecyclerView.getHeight() / 2.0f);
         }
         if (isMirror) {
-            prompterScrollContainer.setScaleX(-1.0f);
-            prompterScrollContainer.setRotation(180f);
+            prompterRecyclerView.setScaleX(-1.0f);
+            prompterRecyclerView.setRotation(180f);
             btnPrompterMirror.setColorFilter(Color.parseColor("#38BDF8"));
         } else {
-            prompterScrollContainer.setScaleX(1.0f);
-            prompterScrollContainer.setRotation(0f);
+            prompterRecyclerView.setScaleX(1.0f);
+            prompterRecyclerView.setRotation(0f);
             btnPrompterMirror.setColorFilter(Color.parseColor("#CBD5E1"));
         }
     }
 
     private void updateAiButtonStyle() {
-        if (btnPrompterAi == null) return;
-        btnPrompterAi.setTextColor(Color.parseColor(isVoiceFollow ? "#38BDF8" : "#CBD5E1"));
+        syncToolbarHighlights();
+    }
+
+    /**
+     * 统一同步底部工具栏所有开关图标的常亮状态
+     */
+    private void syncToolbarHighlights() {
+        int activeColor = Color.parseColor("#38BDF8");
+        int normalColor = Color.parseColor("#CBD5E1");
+        if (btnPrompterPlayPause != null) {
+            btnPrompterPlayPause.setColorFilter(isPlaying ? activeColor : normalColor);
+        }
+        if (btnPrompterMirror != null) {
+            btnPrompterMirror.setColorFilter(isMirror ? activeColor : normalColor);
+        }
+        if (btnPrompterAlign != null) {
+            btnPrompterAlign.setColorFilter(isAlignLeft ? activeColor : normalColor);
+        }
+        if (btnPrompterAi != null) {
+            btnPrompterAi.setTextColor(isVoiceFollow ? activeColor : normalColor);
+        }
+        if (btnPrompterOrientation != null) {
+            btnPrompterOrientation.setColorFilter(isLandscape ? activeColor : normalColor);
+        }
     }
 
     private void applyAlignment() {
         if (isAlignLeft) {
-            tvPrompterText.setGravity(Gravity.START);
             btnPrompterAlign.setImageResource(R.drawable.ic_align_left);
             btnPrompterAlign.setColorFilter(Color.parseColor("#818CF8"));
         } else {
-            tvPrompterText.setGravity(Gravity.CENTER_HORIZONTAL);
             btnPrompterAlign.setImageResource(R.drawable.ic_align_center);
             btnPrompterAlign.setColorFilter(Color.parseColor("#CBD5E1"));
         }
+        chunkAdapter.notifyDataSetChanged();
     }
 
     private void startPrompter(String source) {
         if (isPlaying) return;
-        // 互斥：启动匀速滚动前先关闭 AI 跟读并释放语音引擎
-        if (isVoiceFollow) closeVoiceFollowInternal();
-        if (voiceFollower != null) {
-            voiceFollower.release();
-            voiceFollower = null;
+        // 与 AI 跟读严格互斥：开启匀速滚动时自动关闭 AI 跟读
+        if (isVoiceFollow) {
+            isVoiceFollow = false;
+            cbVoiceFollow.setChecked(false);
+            syncToolbarHighlights();
+            if (voiceFollower != null) voiceFollower.stopListening();
+            saveSettings();
         }
         isPlaying = true;
         updatePlaybackState(PlaybackStateCompat.STATE_PLAYING);
         lastFrameTime = 0L;
         Choreographer.getInstance().removeFrameCallback(frameCallback);
+        if (voiceFollower != null) voiceFollower.stopListening();
         Choreographer.getInstance().postFrameCallback(frameCallback);
         btnPrompterPlayPause.setImageResource(android.R.drawable.ic_media_pause);
+        syncToolbarHighlights();
         showHud("▶ 开始滚动 (" + source + ")");
-    }
-
-    private void closeVoiceFollowInternal() {
-        isVoiceFollow = false;
-        cbVoiceFollow.setChecked(false);
-        updateAiButtonStyle();
-        saveSettings();
-        if (voiceFollower != null) voiceFollower.stopListening();
     }
 
     private void pausePrompter(String source) {
@@ -1324,6 +1089,7 @@ public class MainActivity extends AppCompatActivity {
         updatePlaybackState(PlaybackStateCompat.STATE_PAUSED);
         Choreographer.getInstance().removeFrameCallback(frameCallback);
         btnPrompterPlayPause.setImageResource(android.R.drawable.ic_media_play);
+        syncToolbarHighlights();
         showHud("⏸ 暂停滚动 (" + source + ")");
     }
 
@@ -1337,10 +1103,9 @@ public class MainActivity extends AppCompatActivity {
 
     private void restartPrompter() {
         highlightedIndex = 0;
-        renderKtvText();
-        currentScrollY = 0f;
-        framePrompterContent.setTranslationY(0f);
-        prompterScrollContainer.scrollTo(0, 0);
+        scrollRemainder = 0f;
+        prompterRecyclerView.scrollToPosition(0);
+        chunkAdapter.notifyDataSetChanged();
         showHud("⏮ 回到文稿开头");
     }
 
@@ -1363,7 +1128,7 @@ public class MainActivity extends AppCompatActivity {
             } else {
                 isVoiceFollow = false;
                 cbVoiceFollow.setChecked(false);
-                updateAiButtonStyle();
+                syncToolbarHighlights();
                 saveSettings();
                 Toast.makeText(this, "需要麦克风权限才能使用 AI 跟读", Toast.LENGTH_SHORT).show();
             }
@@ -1428,10 +1193,53 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
+        if (!advanced) {
+            StringBuilder cleanSpoken = new StringBuilder();
+            for (int i = 0; i < deltaText.length(); i++) {
+                char ch = normalizeChar(deltaText.charAt(i));
+                if (!isIgnorableChar(ch)) cleanSpoken.append(ch);
+            }
+            if (cleanSpoken.length() >= 2) {
+                int searchStart = skipPunctuation(highlightedIndex);
+                int searchLimit = Math.min(currentPrompterScript.length(), searchStart + 220);
+                String target = cleanSpoken.substring(0, Math.min(3, cleanSpoken.length()));
+                int matchEnd = findPhraseInWindow(searchStart, searchLimit, target);
+                if (matchEnd >= 0) {
+                    highlightedIndex = skipPunctuation(matchEnd);
+                    advanced = true;
+                }
+            }
+        }
+
         if (advanced) {
             renderKtvText();
             scrollToHighlightedLine();
         }
+    }
+
+    private int findPhraseInWindow(int start, int limit, String cleanTarget) {
+        if (cleanTarget.length() < 2) return -1;
+        for (int pos = start; pos < limit; pos++) {
+            int p = pos;
+            int matched = 0;
+            while (p < limit && matched < cleanTarget.length()) {
+                char sc = normalizeChar(currentPrompterScript.charAt(p));
+                if (isIgnorableChar(sc)) {
+                    p++;
+                    continue;
+                }
+                if (sc == cleanTarget.charAt(matched)) {
+                    matched++;
+                    p++;
+                } else {
+                    break;
+                }
+            }
+            if (matched == cleanTarget.length()) {
+                return p;
+            }
+        }
+        return -1;
     }
 
     private int skipPunctuation(int idx) {
@@ -1462,83 +1270,243 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void renderKtvText() {
-        if (currentPrompterScript == null) currentPrompterScript = "";
-        CharSequence cs = tvPrompterText.getText();
-        if (cs instanceof Spannable) {
-            Spannable sp = (Spannable) cs;
-            sp.removeSpan(ktvHighlightSpan);
-            sp.removeSpan(focusSpan);
-            int end = Math.min(highlightedIndex, sp.length());
-            if (end > 0) {
-                sp.setSpan(ktvHighlightSpan, 0, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-            }
-            applyFocusSpans(sp);
-            tvPrompterText.invalidate();
-        } else {
-            SpannableString ss = new SpannableString(currentPrompterScript);
-            int end = Math.min(highlightedIndex, currentPrompterScript.length());
-            if (end > 0) {
-                ss.setSpan(ktvHighlightSpan, 0, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-            }
-            applyFocusSpans(ss);
-            tvPrompterText.setText(ss, TextView.BufferType.SPANNABLE);
+    private static class ScriptChunk {
+        final int start;
+        final int end;
+        final String text;
+        final CharSequence unreadText;
+        final CharSequence readText;
+        ScriptChunk(int start, int end, String text, CharSequence unreadText, CharSequence readText) {
+            this.start = start;
+            this.end = end;
+            this.text = text;
+            this.unreadText = unreadText;
+            this.readText = readText;
         }
     }
 
-    /** 扫描《…》区间，把重点词/停顿提醒片段染为橙色（书名号一并高亮提示）。 */
-    private void applyFocusSpans(Spannable sp) {
-        String s = currentPrompterScript;
-        int i = 0;
-        int n = s.length();
-        while (i < n) {
-            if (s.charAt(i) == '《') {
-                int close = s.indexOf('》', i + 1);
-                if (close < 0) break;
-                int spanStart = Math.min(i, sp.length());
-                int spanEnd = Math.min(close + 1, sp.length());
-                if (spanEnd > spanStart) {
-                    sp.setSpan(focusSpan, spanStart, spanEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+    private final List<ScriptChunk> scriptChunks = new ArrayList<>();
+    private int activeChunkPos = 0;
+
+
+    private static void applyStaticBoldEmphasisSpans(SpannableString ss, String text, boolean isFullyRead) {
+        int idx = 0;
+        while (idx < text.length()) {
+            int open = text.indexOf("**", idx);
+            if (open < 0) break;
+            int close = text.indexOf("**", open + 2);
+            if (close < 0) break;
+            if (close > open + 2) {
+                ss.setSpan(new android.text.style.RelativeSizeSpan(0.001f),
+                        open, open + 2, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+                ss.setSpan(new ForegroundColorSpan(Color.TRANSPARENT),
+                        open, open + 2, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+                ss.setSpan(new StyleSpan(android.graphics.Typeface.BOLD),
+                        open + 2, close, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+                if (!isFullyRead) {
+                    ss.setSpan(new ForegroundColorSpan(Color.parseColor("#22D3EE")),
+                            open + 2, close, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
                 }
-                i = close + 1;
-            } else {
-                i++;
+                ss.setSpan(new android.text.style.RelativeSizeSpan(0.001f),
+                        close, close + 2, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+                ss.setSpan(new ForegroundColorSpan(Color.TRANSPARENT),
+                        close, close + 2, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
             }
+            idx = close + 2;
         }
     }
 
-    /**
-     * 把 AI 识别起点同步到当前参考线（屏幕顶部 200dp）所在的那一行，
-     * 支持提词中途任意位置开启跟读，而不是强制从第一句开始。
-     */
+    private void buildChunks(String fullText) {
+        scriptChunks.clear();
+        activeChunkPos = 0;
+        if (fullText == null || fullText.isEmpty()) return;
+        int len = fullText.length();
+        int i = 0;
+        while (i < len) {
+            int nl = fullText.indexOf('\n', i);
+            int segEnd = (nl == -1) ? len : nl + 1;
+            int pos = i;
+            while (pos < segEnd) {
+                int chunkEnd = Math.min(pos + 32, segEnd);
+                String chunkStr = fullText.substring(pos, chunkEnd);
+                CharSequence unread = chunkStr;
+                CharSequence read = chunkStr;
+                if (chunkStr.contains("**")) {
+                    SpannableString uSpan = new SpannableString(chunkStr);
+                    SpannableString rSpan = new SpannableString(chunkStr);
+                    applyStaticBoldEmphasisSpans(uSpan, chunkStr, false);
+                    applyStaticBoldEmphasisSpans(rSpan, chunkStr, true);
+                    unread = uSpan;
+                    read = rSpan;
+                }
+                scriptChunks.add(new ScriptChunk(pos, chunkEnd, chunkStr, unread, read));
+                pos = chunkEnd;
+            }
+            i = segEnd;
+        }
+    }
+
+    private class ChunkAdapter extends RecyclerView.Adapter<ChunkAdapter.VH> {
+        class VH extends RecyclerView.ViewHolder {
+            final TextView tv;
+            VH(TextView tv) { super(tv); this.tv = tv; }
+        }
+
+        @NonNull
+        @Override
+        public VH onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
+            TextView tv = new TextView(parent.getContext());
+            tv.setLayoutParams(new RecyclerView.LayoutParams(
+                    RecyclerView.LayoutParams.MATCH_PARENT,
+                    RecyclerView.LayoutParams.WRAP_CONTENT));
+            tv.setLineSpacing(0f, 1.35f);
+            tv.setTypeface(null, android.graphics.Typeface.NORMAL);
+            return new VH(tv);
+        }
+
+        @Override
+        public void onBindViewHolder(@NonNull VH holder, int position) {
+            ScriptChunk c = scriptChunks.get(position);
+            holder.tv.setTextSize(currentFontSize);
+            holder.tv.setGravity(isAlignLeft ? Gravity.START : Gravity.CENTER_HORIZONTAL);
+            if (highlightedIndex >= c.end) {
+                holder.tv.setTextColor(Color.parseColor("#FACC15"));
+                holder.tv.setText(c.readText);
+            } else if (highlightedIndex <= c.start) {
+                holder.tv.setTextColor(Color.WHITE);
+                holder.tv.setText(c.unreadText);
+            } else {
+                holder.tv.setTextColor(Color.WHITE);
+                SpannableString ss = new SpannableString(c.text);
+                applyStaticBoldEmphasisSpans(ss, c.text, false);
+                int localEnd = Math.min(highlightedIndex - c.start, c.text.length());
+                ss.setSpan(ktvHighlightSpan, 0, localEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+                holder.tv.setText(ss);
+            }
+            holder.tv.setOnLongClickListener(v -> {
+                if (isPrompterActive) {
+                    jumpAndStartVoiceFollow(c.start);
+                    return true;
+                }
+                return false;
+            });
+        }
+
+
+        private void applyBoldEmphasisSpans(SpannableString ss, String text, boolean isFullyRead) {
+            int idx = 0;
+            while (idx < text.length()) {
+                int open = text.indexOf("**", idx);
+                if (open < 0) break;
+                int close = text.indexOf("**", open + 2);
+                if (close < 0) break;
+                if (close > open + 2) {
+                    ss.setSpan(new android.text.style.RelativeSizeSpan(0.001f),
+                            open, open + 2, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+                    ss.setSpan(new ForegroundColorSpan(Color.TRANSPARENT),
+                            open, open + 2, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+                    ss.setSpan(new StyleSpan(android.graphics.Typeface.BOLD),
+                            open + 2, close, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+                    if (!isFullyRead) {
+                        ss.setSpan(new ForegroundColorSpan(Color.parseColor("#22D3EE")),
+                                open + 2, close, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+                    }
+                    ss.setSpan(new android.text.style.RelativeSizeSpan(0.001f),
+                            close, close + 2, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+                    ss.setSpan(new ForegroundColorSpan(Color.TRANSPARENT),
+                            close, close + 2, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+                }
+                idx = close + 2;
+            }
+        }
+
+        @Override
+        public int getItemCount() {
+            return scriptChunks.size();
+        }
+    }
+
+    private int findChunkForOffset(int offset) {
+        for (int i = 0; i < scriptChunks.size(); i++) {
+            if (offset < scriptChunks.get(i).end) return i;
+        }
+        return Math.max(0, scriptChunks.size() - 1);
+    }
+
+    private void renderKtvText() {
+        int oldPos = activeChunkPos;
+        int newPos = findChunkForOffset(highlightedIndex);
+        activeChunkPos = newPos;
+        int from = Math.min(oldPos, newPos);
+        int to = Math.max(oldPos, newPos);
+        chunkAdapter.notifyItemRangeChanged(from, to - from + 1);
+    }
+
+    private int findSentenceStart(int offset) {
+        if (currentPrompterScript == null || currentPrompterScript.isEmpty()) return 0;
+        int i = Math.min(Math.max(0, offset), currentPrompterScript.length() - 1);
+        while (i > 0) {
+            char prev = currentPrompterScript.charAt(i - 1);
+            if (prev == '\n' || prev == '。' || prev == '！' || prev == '？' || prev == '.' || prev == '!' || prev == '?') {
+                break;
+            }
+            i--;
+        }
+        return skipPunctuation(i);
+    }
+
+    private void jumpAndStartVoiceFollow(int targetOffset) {
+        int sentenceStart = findSentenceStart(targetOffset);
+        highlightedIndex = sentenceStart;
+        activeChunkPos = findChunkForOffset(highlightedIndex);
+        chunkAdapter.notifyDataSetChanged();
+        if (!isVoiceFollow) {
+            isVoiceFollow = true;
+            cbVoiceFollow.setChecked(true);
+            saveSettings();
+            syncToolbarHighlights();
+            isPlaying = true;
+            pausePrompter("指定句开启AI跟读");
+            ensureMicPermissionAndInitVoice();
+        }
+        showHud("🎤 已定位到该句，开始AI跟读");
+        wakeFloatingBar();
+    }
+
     private void syncHighlightedIndexToTopVisibleLine() {
-        Layout layout = tvPrompterText.getLayout();
-        if (layout == null || currentPrompterScript.isEmpty()) return;
-        float density = getResources().getDisplayMetrics().density;
-        float focusLinePx = 200f * density;
-        int yInTextView = Math.max(0, Math.round(focusLinePx + currentScrollY - tvPrompterText.getTop()));
-        int line = layout.getLineForVertical(yInTextView);
-        int start = Math.min(layout.getLineStart(line), currentPrompterScript.length());
-        highlightedIndex = skipPunctuation(start);
-        renderKtvText();
+        if (prompterLayoutManager == null || scriptChunks.isEmpty()) return;
+        int firstPos = prompterLayoutManager.findFirstVisibleItemPosition();
+        int lastPos = prompterLayoutManager.findLastVisibleItemPosition();
+        if (firstPos < 0) return;
+        int focusY = (int) (prompterRecyclerView.getHeight() * 0.28f);
+        int chosenPos = firstPos;
+        int bestDist = Integer.MAX_VALUE;
+        for (int p = firstPos; p <= lastPos && p < scriptChunks.size(); p++) {
+            View child = prompterLayoutManager.findViewByPosition(p);
+            if (child != null) {
+                int dist = Math.abs(child.getTop() - focusY);
+                if (dist < bestDist) {
+                    bestDist = dist;
+                    chosenPos = p;
+                }
+            }
+        }
+        highlightedIndex = findSentenceStart(scriptChunks.get(chosenPos).start);
+        activeChunkPos = findChunkForOffset(highlightedIndex);
+        chunkAdapter.notifyDataSetChanged();
     }
 
     private void scrollToHighlightedLine() {
-        Layout layout = tvPrompterText.getLayout();
-        if (layout == null) return;
-        int offset = Math.min(highlightedIndex, currentPrompterScript.length());
-        int line = layout.getLineForOffset(offset);
-        int lineTop = layout.getLineTop(line);
-        int maxScroll = Math.max(0, framePrompterContent.getHeight() - prompterScrollContainer.getHeight());
-        currentScrollY = Math.max(0f, Math.min(maxScroll, lineTop));
-        framePrompterContent.setTranslationY(-currentScrollY);
+        if (prompterLayoutManager == null || scriptChunks.isEmpty()) return;
+        int pos = findChunkForOffset(highlightedIndex);
+        prompterLayoutManager.scrollToPositionWithOffset(pos, 0);
     }
 
     private void adjustFontSize(int delta) {
         currentFontSize = Math.max(24, Math.min(90, currentFontSize + delta));
         seekFontSize.setProgress(currentFontSize);
         tvFontSizeValue.setText(currentFontSize + " sp");
-        tvPrompterText.setTextSize(currentFontSize);
+        chunkAdapter.notifyDataSetChanged();
         showHud("🔤 字号: " + currentFontSize + " sp");
         saveSettings();
     }
@@ -1562,15 +1530,16 @@ public class MainActivity extends AppCompatActivity {
             float deltaSeconds = (frameTimeNanos - lastFrameTime) / 1_000_000_000.0f;
             lastFrameTime = frameTimeNanos;
 
-            // 防异常跳帧保护
             if (deltaSeconds > 0f && deltaSeconds < 0.1f) {
-                currentScrollY += currentSpeed * deltaSeconds;
-                // 使用 GPU 亚像素浮点位移 (setTranslationY) 替代整数 scrollTo，彻底消除掉帧与抖动
-                framePrompterContent.setTranslationY(-currentScrollY);
+                scrollRemainder += currentSpeed * deltaSeconds;
+                int dy = (int) scrollRemainder;
+                if (dy != 0) {
+                    scrollRemainder -= dy;
+                    prompterRecyclerView.scrollBy(0, dy);
+                }
             }
 
-            int maxScroll = Math.max(0, framePrompterContent.getHeight() - prompterScrollContainer.getHeight());
-            if (maxScroll > 0 && currentScrollY >= maxScroll) {
+            if (!prompterRecyclerView.canScrollVertically(1)) {
                 pausePrompter("台词结束");
                 return;
             }
@@ -1607,9 +1576,19 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void wakeFloatingBar() {
-        // 提词进行中工具栏常驻，不自动隐藏；透明度在布局中调为半透明
         layoutFloatingBar.setVisibility(View.VISIBLE);
+        layoutFloatingBar.animate().cancel();
+        layoutFloatingBar.setAlpha(1.0f);
+        hudHandler.removeCallbacks(hideFloatingBarRunnable);
+        hudHandler.postDelayed(hideFloatingBarRunnable, 3000);
     }
+
+    private final Runnable hideFloatingBarRunnable = () -> {
+        if (isPrompterActive) {
+            // 工具栏常驻不消失，静置时自动变为半透明
+            layoutFloatingBar.animate().alpha(0.35f).setDuration(300).start();
+        }
+    };
 
     @Override
     protected void onResume() {
@@ -1617,7 +1596,7 @@ public class MainActivity extends AppCompatActivity {
         requestExclusiveAudioFocus();
         if (mediaSession != null) {
             mediaSession.setActive(true);
-            updatePlaybackState(isPlaying ? PlaybackStateCompat.STATE_PLAYING : PlaybackStateCompat.STATE_PAUSED);
+            updatePlaybackState(PlaybackStateCompat.STATE_PLAYING);
         }
     }
 
@@ -1635,8 +1614,6 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        if (saveDraftRunnable != null) saveHandler.removeCallbacks(saveDraftRunnable);
-        cancelCountdown();
         if (mediaSession != null) {
             mediaSession.release();
         }
@@ -1647,5 +1624,7 @@ public class MainActivity extends AppCompatActivity {
             audioManager.abandonAudioFocusRequest(audioFocusRequest);
         }
         Choreographer.getInstance().removeFrameCallback(frameCallback);
+        if (voiceFollower != null) voiceFollower.stopListening();
+        hudHandler.removeCallbacksAndMessages(null);
     }
 }

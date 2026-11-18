@@ -18,6 +18,7 @@ import android.text.Layout;
 import android.text.Spannable;
 import android.text.SpannableString;
 import android.text.style.ForegroundColorSpan;
+import android.text.style.StyleSpan;
 import android.view.Choreographer;
 import android.view.GestureDetector;
 import android.view.Gravity;
@@ -79,7 +80,6 @@ public class FloatingPrompterService extends Service {
     private boolean isMirror = false;
     private boolean isAiOn = false;
     private final ForegroundColorSpan ktvSpan = new ForegroundColorSpan(Color.parseColor("#FACC15"));
-    private final ForegroundColorSpan focusSpan = new ForegroundColorSpan(Color.parseColor("#FB923C"));
     private boolean isLocked = false;
 
     private float currentScrollY = 0f;
@@ -208,6 +208,9 @@ public class FloatingPrompterService extends Service {
         btnFloatAi = floatView.findViewById(R.id.btnFloatAi);
 
         tvFloatSpeed.setText(String.valueOf(currentSpeed));
+        tvFloatText.setLayerType(View.LAYER_TYPE_NONE, null);
+        floatTextWrapper.setLayerType(View.LAYER_TYPE_NONE, null);
+        tvFloatText.setTypeface(null, android.graphics.Typeface.NORMAL);
         tvFloatText.setTextSize(floatFontSize);
         applyBackgroundAlpha();
         applyAlignment();
@@ -263,17 +266,15 @@ public class FloatingPrompterService extends Service {
             saveFloatPrefs();
         });
         btnFloatAi.setOnClickListener(v -> {
+            isAiOn = !isAiOn;
+            btnFloatAi.setTextColor(Color.parseColor(isAiOn ? "#38BDF8" : "#CBD5E1"));
+            saveFloatPrefs();
             if (isAiOn) {
-                // 关闭跟读（与匀速滚动互斥）
-                closeAiInternal();
-            } else {
-                // 互斥：开启跟读前先停止匀速滚动
-                isAiOn = true;
-                btnFloatAi.setTextColor(Color.parseColor("#38BDF8"));
-                saveFloatPrefs();
                 pauseScrolling();
                 syncFloatHighlightToTopVisibleLine();
                 startVoiceFollow();
+            } else if (voiceFollower != null) {
+                voiceFollower.stopListening();
             }
         });
         floatView.findViewById(R.id.btnFloatOrient).setOnClickListener(v -> {
@@ -367,6 +368,7 @@ public class FloatingPrompterService extends Service {
         if (isAiOn) {
             isPlaying = false;
             btnFloatPlay.setText("▶");
+        btnFloatPlay.setTextColor(Color.parseColor("#CBD5E1"));
             startVoiceFollow();
         } else {
             startScrolling();
@@ -409,7 +411,7 @@ public class FloatingPrompterService extends Service {
         if (isAlignLeft) {
             tvFloatText.setGravity(Gravity.START);
             btnFloatAlign.setImageResource(R.drawable.ic_align_left);
-            btnFloatAlign.setColorFilter(Color.parseColor("#818CF8"));
+            btnFloatAlign.setColorFilter(Color.parseColor("#38BDF8"));
         } else {
             tvFloatText.setGravity(Gravity.CENTER_HORIZONTAL);
             btnFloatAlign.setImageResource(R.drawable.ic_align_center);
@@ -429,25 +431,25 @@ public class FloatingPrompterService extends Service {
 
     private void startScrolling() {
         if (isPlaying) return;
-        // 互斥：启动匀速滚动前先关闭 AI 跟读
-        if (isAiOn) closeAiInternal();
+        // 与 AI 跟读严格互斥：开启匀速滚动时自动关闭 AI 跟读
+        if (isAiOn) {
+            isAiOn = false;
+            btnFloatAi.setTextColor(Color.parseColor("#CBD5E1"));
+            if (voiceFollower != null) voiceFollower.stopListening();
+            saveFloatPrefs();
+        }
         isPlaying = true;
         btnFloatPlay.setText("⏸");
+        btnFloatPlay.setTextColor(Color.parseColor("#38BDF8"));
         lastFrameTime = 0L;
         Choreographer.getInstance().removeFrameCallback(frameCallback);
         Choreographer.getInstance().postFrameCallback(frameCallback);
     }
 
-    private void closeAiInternal() {
-        isAiOn = false;
-        btnFloatAi.setTextColor(Color.parseColor("#CBD5E1"));
-        saveFloatPrefs();
-        if (voiceFollower != null) voiceFollower.stopListening();
-    }
-
     private void pauseScrolling() {
         isPlaying = false;
         btnFloatPlay.setText("▶");
+        btnFloatPlay.setTextColor(Color.parseColor("#CBD5E1"));
         Choreographer.getInstance().removeFrameCallback(frameCallback);
     }
 
@@ -541,7 +543,7 @@ public class FloatingPrompterService extends Service {
                 int line = layout.getLineForOffset(Math.min(highlightedIndex, scriptText.length()));
                 int maxS = Math.max(0, floatTextWrapper.getHeight() - floatScrollContainer.getHeight());
                 currentScrollY = Math.max(0f, Math.min(maxS, layout.getLineTop(line)));
-                floatTextWrapper.setTranslationY(-currentScrollY);
+                floatTextWrapper.animate().translationY(-currentScrollY).setDuration(180).start();
             }
         }
     }
@@ -570,42 +572,49 @@ public class FloatingPrompterService extends Service {
         renderText();
     }
 
+    private void applyEmphasisSpans(Spannable sp, String text) {
+        ForegroundColorSpan[] oldSpans = sp.getSpans(0, sp.length(), ForegroundColorSpan.class);
+        for (ForegroundColorSpan s : oldSpans) {
+            if (s != ktvSpan) sp.removeSpan(s);
+        }
+        int idx = 0;
+        while (idx < text.length()) {
+            int open = text.indexOf("**", idx);
+            if (open < 0) break;
+            int close = text.indexOf("**", open + 2);
+            if (close < 0) break;
+            if (close > open + 2) {
+                sp.setSpan(new android.text.style.RelativeSizeSpan(0.001f),
+                        open, open + 2, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+                sp.setSpan(new ForegroundColorSpan(Color.TRANSPARENT),
+                        open, open + 2, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+                sp.setSpan(new StyleSpan(android.graphics.Typeface.BOLD),
+                        open + 2, close, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+                sp.setSpan(new ForegroundColorSpan(Color.parseColor("#22D3EE")),
+                        open + 2, close, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+                sp.setSpan(new android.text.style.RelativeSizeSpan(0.001f),
+                        close, close + 2, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+                sp.setSpan(new ForegroundColorSpan(Color.TRANSPARENT),
+                        close, close + 2, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+            }
+            idx = close + 2;
+        }
+    }
+
     private void renderText() {
         CharSequence cs = tvFloatText.getText();
         if (cs instanceof Spannable && cs.toString().equals(scriptText)) {
             Spannable sp = (Spannable) cs;
             sp.removeSpan(ktvSpan);
-            sp.removeSpan(focusSpan);
             int end = Math.min(highlightedIndex, sp.length());
             if (end > 0) sp.setSpan(ktvSpan, 0, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-            applyFocusSpans(sp);
             tvFloatText.invalidate();
         } else {
             SpannableString ss = new SpannableString(scriptText);
+            applyEmphasisSpans(ss, scriptText);
             int end = Math.min(highlightedIndex, scriptText.length());
             if (end > 0) ss.setSpan(ktvSpan, 0, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-            applyFocusSpans(ss);
             tvFloatText.setText(ss, TextView.BufferType.SPANNABLE);
-        }
-    }
-
-    private void applyFocusSpans(Spannable sp) {
-        String s = scriptText;
-        int i = 0;
-        int n = s.length();
-        while (i < n) {
-            if (s.charAt(i) == '《') {
-                int close = s.indexOf('》', i + 1);
-                if (close < 0) break;
-                int spanStart = Math.min(i, sp.length());
-                int spanEnd = Math.min(close + 1, sp.length());
-                if (spanEnd > spanStart) {
-                    sp.setSpan(focusSpan, spanStart, spanEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-                }
-                i = close + 1;
-            } else {
-                i++;
-            }
         }
     }
 
@@ -627,7 +636,7 @@ public class FloatingPrompterService extends Service {
     public void onDestroy() {
         super.onDestroy();
         Choreographer.getInstance().removeFrameCallback(frameCallback);
-        if (voiceFollower != null) { voiceFollower.release(); voiceFollower = null; }
+        if (voiceFollower != null) voiceFollower.release();
         if (mediaSession != null) mediaSession.release();
         if (floatView != null && windowManager != null) {
             try { windowManager.removeView(floatView); } catch (Exception ignored) {}
