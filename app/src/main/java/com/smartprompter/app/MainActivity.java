@@ -1443,6 +1443,16 @@ public class MainActivity extends AppCompatActivity {
                 ss.setSpan(ktvHighlightSpan, 0, localEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
                 holder.tv.setText(ss);
             }
+            holder.tv.setOnClickListener(v -> {
+                if (isPrompterActive) {
+                    if (layoutLineSpacingPanel != null && layoutLineSpacingPanel.getVisibility() == View.VISIBLE) {
+                        layoutLineSpacingPanel.setVisibility(View.GONE);
+                        syncToolbarHighlights();
+                    }
+                    togglePrompterPlayPause("点击屏幕");
+                    wakeFloatingBar();
+                }
+            });
             holder.tv.setOnLongClickListener(v -> {
                 if (isPrompterActive) {
                     jumpAndStartVoiceFollow(c.start);
