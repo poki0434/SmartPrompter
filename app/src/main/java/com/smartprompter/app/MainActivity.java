@@ -233,6 +233,24 @@ public class MainActivity extends AppCompatActivity {
             }
     );
 
+
+    private final ActivityResultLauncher<String> exportLogLauncher = registerForActivityResult(
+            new ActivityResultContracts.CreateDocument("text/plain"),
+            uri -> {
+                if (uri == null) return;
+                try (java.io.OutputStream os = getContentResolver().openOutputStream(uri)) {
+                    if (os != null) {
+                        String logs = PrompterLogger.getRecentLogsCombined(this);
+                        os.write(logs.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                        os.flush();
+                        Toast.makeText(this, "运行日志导出成功", Toast.LENGTH_SHORT).show();
+                    }
+                } catch (Exception e) {
+                    Toast.makeText(this, "导出失败: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                }
+            }
+    );
+
     private final Handler hudHandler = new Handler(Looper.getMainLooper());
 
     @Override
@@ -240,6 +258,7 @@ public class MainActivity extends AppCompatActivity {
         Thread.setDefaultUncaughtExceptionHandler((t, e) -> {
             try {
                 String trace = android.util.Log.getStackTraceString(e);
+                PrompterLogger.logEvent(this, "CRASH: " + trace); PrompterLogger.flush(this);
                 getSharedPreferences("CrashPrefs", MODE_PRIVATE)
                         .edit()
                         .putString("last_crash", trace)
@@ -262,6 +281,7 @@ public class MainActivity extends AppCompatActivity {
         renderDraftList();
         showLastCrashIfAny();
         clearPrompterSessionState();
+        PrompterLogger.endSession(this, "用户退出提词");
         restorePrompterSessionFromBundle(savedInstanceState);
     }
 
@@ -597,6 +617,62 @@ public class MainActivity extends AppCompatActivity {
         return new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(new Date());
     }
 
+
+    private void showSettingsDialog() {
+        String ver = "1.62.0";
+        try {
+            ver = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception ignored) {}
+        final String versionStr = ver;
+        String[] items = {
+                "关于智能提词器 (v" + versionStr + ")",
+                "查看最近 3 次提词运行日志",
+                "导出最近 3 次运行日志 (.txt)",
+                "清空本地运行日志"
+        };
+        new AlertDialog.Builder(this)
+                .setTitle("设置")
+                .setItems(items, (d, which) -> {
+                    if (which == 0) {
+                        new AlertDialog.Builder(this)
+                                .setTitle("关于智能提词器")
+                                .setMessage("版本：v" + versionStr + "\n"
+                                        + "设备：" + Build.MANUFACTURER + " " + Build.MODEL + " (Android " + Build.VERSION.RELEASE + ")\n\n"
+                                        + "核心功能：\n"
+                                        + "• 原生 Canvas 视口直绘引擎（60Hz 锁帧防卡顿）\n"
+                                        + "• 离线 AI 严格跟读（支持手机麦 / 蓝牙麦切换）\n"
+                                        + "• **重点词**加粗高亮 & # 章节标题进度跳转\n"
+                                        + "• 蓝牙耳机免触控遥控 & 半透明悬浮窗\n"
+                                        + "• 草稿置顶、搜索与 Word/MD/TXT 导入导出")
+                                .setPositiveButton("确定", null)
+                                .show();
+                    } else if (which == 1) {
+                        String logs = PrompterLogger.getRecentLogsCombined(this);
+                        String preview = logs.length() > 3000 ? logs.substring(0, 3000) + "\n...(完整内容请点击导出)" : logs;
+                        new AlertDialog.Builder(this)
+                                .setTitle("最近 3 次提词运行日志")
+                                .setMessage(preview)
+                                .setPositiveButton("复制全部", (d2, w2) -> {
+                                    android.content.ClipboardManager cm = (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                                    if (cm != null) {
+                                        cm.setPrimaryClip(android.content.ClipData.newPlainText("prompter_logs", logs));
+                                        Toast.makeText(this, "已复制全部日志", Toast.LENGTH_SHORT).show();
+                                    }
+                                })
+                                .setNegativeButton("关闭", null)
+                                .show();
+                    } else if (which == 2) {
+                        String dateTag = new SimpleDateFormat("yyyyMMdd_HHmm", Locale.getDefault()).format(new Date());
+                        exportLogLauncher.launch("SmartPrompter_Logs_" + dateTag + ".txt");
+                    } else if (which == 3) {
+                        PrompterLogger.clearAllLogs(this);
+                        Toast.makeText(this, "已清空本地运行日志", Toast.LENGTH_SHORT).show();
+                    }
+                })
+                .setNegativeButton("返回", null)
+                .show();
+    }
+
     private void createNewDraft() {
         isNewUnsavedDraft = true;
         currentDraftIndex = -1;
@@ -900,6 +976,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void setupEventListeners() {
+        findViewById(R.id.btnOpenSettings).setOnClickListener(v -> showSettingsDialog());
         findViewById(R.id.btnNewDraft).setOnClickListener(v -> createNewDraft());
         findViewById(R.id.btnImportDraft).setOnClickListener(v ->
                 importFileLauncher.launch(new String[]{
@@ -1206,6 +1283,10 @@ public class MainActivity extends AppCompatActivity {
         highlightedIndex = 0;
         scrollRemainder = 0f;
         prompterCanvasView.setStyleParams(currentFontSize, currentLineSpacing, isAlignLeft, isMirror);
+        String verName = "1.62.0";
+        try { verName = getPackageManager().getPackageInfo(getPackageName(), 0).versionName; } catch (Exception ignored) {}
+        PrompterLogger.startNewSession(this, verName, currentPrompterScript.length(),
+                currentSpeed, currentFontSize, currentLineSpacing, isMirror, isVoiceFollow, useBluetoothMic);
         prompterCanvasView.setScript(currentPrompterScript);
 
         applyMirror();
@@ -1353,6 +1434,7 @@ public class MainActivity extends AppCompatActivity {
         Choreographer.getInstance().postFrameCallback(frameCallback);
         btnPrompterPlayPause.setImageResource(android.R.drawable.ic_media_pause);
         syncToolbarHighlights();
+        PrompterLogger.logEvent(this, "开始滚动 (" + source + ")");
         showHud("▶ 开始滚动 (" + source + ")");
     }
 
@@ -1363,6 +1445,7 @@ public class MainActivity extends AppCompatActivity {
         Choreographer.getInstance().removeFrameCallback(frameCallback);
         btnPrompterPlayPause.setImageResource(android.R.drawable.ic_media_play);
         syncToolbarHighlights();
+        PrompterLogger.logEvent(this, "暂停滚动 (" + source + ")");
         showHud("⏸ 暂停滚动 (" + source + ")");
     }
 
@@ -1654,6 +1737,7 @@ public class MainActivity extends AppCompatActivity {
                 Runtime rt = Runtime.getRuntime();
                 long used = rt.totalMemory() - rt.freeMemory();
                 long max = rt.maxMemory();
+                PrompterLogger.logHeartbeat(MainActivity.this, Math.max(0, lastProgressPct));
                 if (max > 0 && (used * 100L / max) >= 70L) {
                     if (!isVoiceFollow) {
                         VoiceFollower.Companion.releaseSharedModelIfIdle();
@@ -1686,7 +1770,7 @@ public class MainActivity extends AppCompatActivity {
         layoutFloatingBar.setVisibility(View.VISIBLE);
         layoutFloatingBar.animate().cancel();
         layoutFloatingBar.setAlpha(1.0f);
-        if (layoutTopProgress != null) { layoutTopProgress.animate().cancel(); layoutTopProgress.setAlpha(0.85f); }
+        if (layoutTopProgress != null) { layoutTopProgress.animate().cancel(); layoutTopProgress.setAlpha(0.95f); }
         hudHandler.removeCallbacks(hideFloatingBarRunnable);
         hudHandler.postDelayed(hideFloatingBarRunnable, 3000);
     }
@@ -1695,7 +1779,7 @@ public class MainActivity extends AppCompatActivity {
         if (isPrompterActive) {
             // 工具栏常驻不消失，静置时自动变为半透明
             layoutFloatingBar.animate().alpha(0.35f).setDuration(300).start();
-            if (layoutTopProgress != null) layoutTopProgress.animate().alpha(0.28f).setDuration(300).start();
+            if (layoutTopProgress != null) layoutTopProgress.animate().alpha(0.55f).setDuration(300).start();
         }
     };
 
@@ -1825,6 +1909,7 @@ public class MainActivity extends AppCompatActivity {
     @Override
     public void onTrimMemory(int level) {
         super.onTrimMemory(level);
+        PrompterLogger.logEvent(this, "系统内存警告 onTrimMemory level=" + level);
         if (level >= TRIM_MEMORY_RUNNING_LOW && !isVoiceFollow) {
             if (voiceFollower != null) voiceFollower.stopListening();
             VoiceFollower.Companion.releaseSharedModelIfIdle();

@@ -38,10 +38,23 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="共 1 篇提词文稿"
-                    android:textColor="#94A3B8"
+                    android:textColor="#E2E8F0"
                     android:textSize="12sp"
                     android:layout_marginTop="2dp" />
             </LinearLayout>
+
+            <Button
+                android:id="@+id/btnOpenSettings"
+                android:layout_width="wrap_content"
+                android:layout_height="38dp"
+                android:layout_marginEnd="6dp"
+                android:backgroundTint="#334155"
+                android:minWidth="0dp"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:text="设置"
+                android:textColor="#CBD5E1"
+                android:textSize="13sp" />
 
             <Button
                 android:id="@+id/btnImportDraft"
@@ -405,7 +418,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_gravity="top"
-            android:alpha="0.35"
+            android:alpha="0.58"
             android:background="#4D000000"
             android:orientation="horizontal"
             android:gravity="center_vertical"
@@ -421,9 +434,9 @@
                 android:layout_weight="1"
                 android:max="1000"
                 android:progress="0"
-                android:progressTint="#64748B"
-                android:progressBackgroundTint="#334155"
-                android:thumbTint="#94A3B8" />
+                android:progressTint="#38BDF8"
+                android:progressBackgroundTint="#475569"
+                android:thumbTint="#E2E8F0" />
 
             <TextView
                 android:id="@+id/tvProgressPercent"
