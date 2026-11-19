@@ -12,6 +12,10 @@ import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
+import android.bluetooth.BluetoothA2dp;
+import android.bluetooth.BluetoothHeadset;
+import android.bluetooth.BluetoothProfile;
+import android.media.AudioDeviceInfo;
 import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Build;
@@ -19,7 +23,9 @@ import android.provider.Settings;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.support.v4.media.MediaMetadataCompat;
 import android.support.v4.media.session.MediaSessionCompat;
+import androidx.media.session.MediaButtonReceiver;
 import android.support.v4.media.session.PlaybackStateCompat;
 import android.text.Editable;
 import android.text.Spannable;
@@ -789,13 +795,21 @@ public class MainActivity extends AppCompatActivity {
         mediaSession = new MediaSessionCompat(this, "PrompterMediaSession");
         mediaSession.setFlags(MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS
                 | MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS);
+        mediaSession.setPlaybackToLocal(AudioManager.STREAM_MUSIC);
+        mediaSession.setMetadata(new MediaMetadataCompat.Builder()
+                .putString(MediaMetadataCompat.METADATA_KEY_TITLE, "智能提词器")
+                .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, "蓝牙遥控提词")
+                .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, 3600000L)
+                .build());
 
         updatePlaybackState(PlaybackStateCompat.STATE_PAUSED);
 
         mediaSession.setCallback(new MediaSessionCompat.Callback() {
             @Override
             public void onPlay() {
-                if (isDebounced()) return;
+                boolean debounced = isDebounced();
+                PrompterLogger.logEvent(MainActivity.this, "MediaSession.onPlay() debounced=" + debounced + " active=" + isPrompterActive + " playing=" + isPlaying);
+                if (debounced) return;
                 runOnUiThread(() -> {
                     if (isPrompterActive) {
                         togglePrompterPlayPause("TWS耳机");
@@ -807,7 +821,9 @@ public class MainActivity extends AppCompatActivity {
 
             @Override
             public void onPause() {
-                if (isDebounced()) return;
+                boolean debounced = isDebounced();
+                PrompterLogger.logEvent(MainActivity.this, "MediaSession.onPause() debounced=" + debounced + " active=" + isPrompterActive + " playing=" + isPlaying);
+                if (debounced) return;
                 runOnUiThread(() -> {
                     if (isPrompterActive) {
                         togglePrompterPlayPause("TWS耳机");
@@ -819,7 +835,9 @@ public class MainActivity extends AppCompatActivity {
 
             @Override
             public void onStop() {
-                if (isDebounced()) return;
+                boolean debounced = isDebounced();
+                PrompterLogger.logEvent(MainActivity.this, "MediaSession.onStop() debounced=" + debounced + " active=" + isPrompterActive);
+                if (debounced) return;
                 runOnUiThread(() -> {
                     if (isPrompterActive) {
                         togglePrompterPlayPause("TWS耳机");
@@ -829,17 +847,23 @@ public class MainActivity extends AppCompatActivity {
 
             @Override
             public void onSkipToNext() {
+                PrompterLogger.logEvent(MainActivity.this, "MediaSession.onSkipToNext() active=" + isPrompterActive);
                 runOnUiThread(() -> adjustSpeed(SPEED_STEP, "耳机切歌(下一首)"));
             }
 
             @Override
             public void onSkipToPrevious() {
+                PrompterLogger.logEvent(MainActivity.this, "MediaSession.onSkipToPrevious() active=" + isPrompterActive);
                 runOnUiThread(() -> adjustSpeed(-SPEED_STEP, "耳机切歌(上一首)"));
             }
 
             @Override
             public boolean onMediaButtonEvent(Intent mediaButtonEvent) {
-                KeyEvent event = mediaButtonEvent.getParcelableExtra(Intent.EXTRA_KEY_EVENT);
+                KeyEvent event = mediaButtonEvent != null ? mediaButtonEvent.getParcelableExtra(Intent.EXTRA_KEY_EVENT) : null;
+                if (event != null) {
+                    PrompterLogger.logEvent(MainActivity.this, "MediaSession.onMediaButtonEvent key=" + KeyEvent.keyCodeToString(event.getKeyCode())
+                            + " action=" + event.getAction() + " src=" + event.getSource());
+                }
                 if (event != null && event.getAction() == KeyEvent.ACTION_DOWN) {
                     int keyCode = event.getKeyCode();
                     if (keyCode == KeyEvent.KEYCODE_HEADSETHOOK
@@ -884,6 +908,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void requestExclusiveAudioFocus() {
         if (audioManager == null) return;
+        int res;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             if (audioFocusRequest == null) {
                 audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
@@ -893,13 +918,98 @@ public class MainActivity extends AppCompatActivity {
                                 .build())
                         .setAcceptsDelayedFocusGain(true)
                         .setOnAudioFocusChangeListener(focusChange -> {
-                            // 绝不在回调里递归重抢焦点，彻底杜绝 AudioService 乒乓死循环
+                            // 绝不在回调里递归重抢焦点，仅记录焦点被抢占原因
+                            String fcName;
+                            switch (focusChange) {
+                                case AudioManager.AUDIOFOCUS_GAIN: fcName = "GAIN"; break;
+                                case AudioManager.AUDIOFOCUS_LOSS: fcName = "LOSS(被其他应用永久抢占)"; break;
+                                case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT: fcName = "LOSS_TRANSIENT(被临时抢占)"; break;
+                                case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK: fcName = "LOSS_CAN_DUCK"; break;
+                                default: fcName = String.valueOf(focusChange); break;
+                            }
+                            if (isPrompterActive) {
+                                PrompterLogger.logEvent(MainActivity.this, "AudioFocus变化: " + fcName);
+                                if (focusChange == AudioManager.AUDIOFOCUS_LOSS || focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
+                                    logBluetoothDiagnostics("焦点丢失快照");
+                                }
+                            }
                         })
                         .build();
             }
-            audioManager.requestAudioFocus(audioFocusRequest);
+            res = audioManager.requestAudioFocus(audioFocusRequest);
         } else {
-            audioManager.requestAudioFocus(null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
+            res = audioManager.requestAudioFocus(null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
+        }
+        if (isPrompterActive) {
+            String resStr = res == AudioManager.AUDIOFOCUS_REQUEST_GRANTED ? "GRANTED(1)"
+                    : (res == AudioManager.AUDIOFOCUS_REQUEST_DELAYED ? "DELAYED(2)" : "FAILED(" + res + ")");
+            PrompterLogger.logEvent(this, "AudioFocus申请结果: " + resStr);
+        }
+    }
+
+    private void logBluetoothDiagnostics(String tag) {
+        try {
+            StringBuilder sb = new StringBuilder();
+            sb.append("蓝牙诊断[").append(tag).append("]: ");
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                boolean btPerm = ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT)
+                        == PackageManager.PERMISSION_GRANTED;
+                sb.append("BT_CONNECT权限=").append(btPerm ? "允许" : "拒绝");
+            } else {
+                sb.append("BT权限=旧版免检");
+            }
+            if (audioManager != null) {
+                sb.append(" | mode=").append(audioManager.getMode())
+                  .append(" | a2dpOn=").append(audioManager.isBluetoothA2dpOn())
+                  .append(" | scoOn=").append(audioManager.isBluetoothScoOn())
+                  .append(" | musicActive=").append(audioManager.isMusicActive());
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    int activePlaybacks = audioManager.getActivePlaybackConfigurations().size();
+                    sb.append(" | 系统活跃音频流=").append(activePlaybacks);
+                }
+                int curVol = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC);
+                int maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+                sb.append(" | 媒体音量=").append(curVol).append("/").append(maxVol);
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    StringBuilder outBt = new StringBuilder();
+                    for (AudioDeviceInfo d : audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)) {
+                        int t = d.getType();
+                        if (t == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+                                || t == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+                                || t == 26 /* TYPE_BLE_HEADSET */
+                                || t == 27 /* TYPE_BLE_SPEAKER */
+                                || t == AudioDeviceInfo.TYPE_HEARING_AID) {
+                            if (outBt.length() > 0) outBt.append(", ");
+                            outBt.append(d.getProductName()).append("(type=").append(t).append(")");
+                        }
+                    }
+                    sb.append(" | 蓝牙输出=[").append(outBt.length() > 0 ? outBt : "无").append("]");
+
+                    StringBuilder inBt = new StringBuilder();
+                    for (AudioDeviceInfo d : audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)) {
+                        int t = d.getType();
+                        if (t == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+                                || t == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+                                || t == 26 /* TYPE_BLE_HEADSET */) {
+                            if (inBt.length() > 0) inBt.append(", ");
+                            inBt.append(d.getProductName()).append("(type=").append(t).append(")");
+                        }
+                    }
+                    sb.append(" | 蓝牙输入=[").append(inBt.length() > 0 ? inBt : "无").append("]");
+                }
+            }
+            if (mediaSession != null) {
+                PlaybackStateCompat ps = mediaSession.getController() != null
+                        ? mediaSession.getController().getPlaybackState() : null;
+                sb.append(" | MediaSession active=").append(mediaSession.isActive())
+                  .append(" state=").append(ps != null ? ps.getState() : "null");
+            } else {
+                sb.append(" | MediaSession=null");
+            }
+            PrompterLogger.logEvent(this, sb.toString());
+        } catch (Throwable t) {
+            PrompterLogger.logEvent(this, "蓝牙诊断异常: " + t.getMessage());
         }
     }
 
@@ -925,6 +1035,10 @@ public class MainActivity extends AppCompatActivity {
         volumeReceiver = new VolumeChangeReceiver();
         IntentFilter filter = new IntentFilter();
         filter.addAction("android.media.VOLUME_CHANGED_ACTION");
+        filter.addAction(BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED);
+        filter.addAction(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED);
+        filter.addAction(AudioManager.ACTION_AUDIO_BECOMING_NOISY);
+        filter.addAction(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED);
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(volumeReceiver, filter, Context.RECEIVER_EXPORTED);
@@ -936,14 +1050,39 @@ public class MainActivity extends AppCompatActivity {
     private class VolumeChangeReceiver extends BroadcastReceiver {
         @Override
         public void onReceive(Context context, Intent intent) {
+            String action = intent != null ? intent.getAction() : null;
+            if (action == null) return;
+            if (BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED.equals(action)
+                    || BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED.equals(action)) {
+                int state = intent.getIntExtra(BluetoothProfile.EXTRA_STATE, -1);
+                int prev = intent.getIntExtra(BluetoothProfile.EXTRA_PREVIOUS_STATE, -1);
+                if (isPrompterActive) {
+                    PrompterLogger.logEvent(MainActivity.this, "蓝牙连接状态变化: " + action + " " + prev + "->" + state);
+                }
+                return;
+            }
+            if (AudioManager.ACTION_AUDIO_BECOMING_NOISY.equals(action)) {
+                if (isPrompterActive) {
+                    PrompterLogger.logEvent(MainActivity.this, "蓝牙音频断开(BECOMING_NOISY)");
+                }
+                return;
+            }
+            if (AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED.equals(action)) {
+                int scoState = intent.getIntExtra(AudioManager.EXTRA_SCO_AUDIO_STATE, -1);
+                if (isPrompterActive) {
+                    PrompterLogger.logEvent(MainActivity.this, "蓝牙SCO状态变化: state=" + scoState);
+                }
+                return;
+            }
             if (!isPrompterActive) return;
-            if ("android.media.VOLUME_CHANGED_ACTION".equals(intent.getAction())) {
+            if ("android.media.VOLUME_CHANGED_ACTION".equals(action)) {
                 int streamType = intent.getIntExtra("android.media.EXTRA_VOLUME_STREAM_TYPE", -1);
                 if (streamType != -1 && streamType != AudioManager.STREAM_MUSIC) return;
 
                 int volume = intent.getIntExtra("android.media.EXTRA_VOLUME_STREAM_VALUE", -1);
                 if (volume == -1 || volume == midVolume) return;
 
+                PrompterLogger.logEvent(MainActivity.this, "音量变化广播: mid=" + midVolume + " -> new=" + volume);
                 if (volume > midVolume) {
                     adjustSpeed(SPEED_STEP, "耳机音量上滑 ➔ 加速");
                 } else {
@@ -978,8 +1117,12 @@ public class MainActivity extends AppCompatActivity {
                     || keyCode == KeyEvent.KEYCODE_MEDIA_PLAY
                     || keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE
                     || keyCode == KeyEvent.KEYCODE_SPACE) {
-                if (event.getAction() == KeyEvent.ACTION_DOWN && !isDebounced()) {
-                    togglePrompterPlayPause("TWS耳机/按键");
+                if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                    boolean debounced = isDebounced();
+                    PrompterLogger.logEvent(this, "dispatchKeyEvent按键: " + KeyEvent.keyCodeToString(keyCode) + " debounced=" + debounced);
+                    if (!debounced) {
+                        togglePrompterPlayPause("TWS耳机/按键");
+                    }
                 }
                 return true;
             }
@@ -1297,6 +1440,7 @@ public class MainActivity extends AppCompatActivity {
         try { verName = getPackageManager().getPackageInfo(getPackageName(), 0).versionName; } catch (Exception ignored) {}
         PrompterLogger.startNewSession(this, verName, currentPrompterScript.length(),
                 currentSpeed, currentFontSize, currentLineSpacing, isMirror, isVoiceFollow, useBluetoothMic);
+        logBluetoothDiagnostics("会话开始");
         prompterCanvasView.setScript(currentPrompterScript);
         looperMsgCountInSec = 0;
         Looper.getMainLooper().setMessageLogging(x -> {
@@ -1452,6 +1596,10 @@ public class MainActivity extends AppCompatActivity {
             saveSettings();
         }
         isPlaying = true;
+        requestExclusiveAudioFocus();
+        if (mediaSession != null) {
+            mediaSession.setActive(true);
+        }
         updatePlaybackState(PlaybackStateCompat.STATE_PLAYING);
         lastFrameTime = 0L;
         Choreographer.getInstance().removeFrameCallback(frameCallback);
@@ -1880,11 +2028,22 @@ public class MainActivity extends AppCompatActivity {
     }
 
     @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        if (intent != null) {
+            PrompterLogger.logEvent(this, "onNewIntent action=" + intent.getAction());
+            if (mediaSession != null) {
+                MediaButtonReceiver.handleIntent(mediaSession, intent);
+            }
+        }
+    }
+
+    @Override
     protected void onPause() {
         super.onPause();
         if (isPrompterActive) {
             pausePrompter("切入后台");
-        }
+            }
     }
 
     @Override
@@ -1895,7 +2054,7 @@ public class MainActivity extends AppCompatActivity {
         if (!isPrompterActive) {
             setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
         } else {
-            setRequestedOrientation(isLandscape
+                setRequestedOrientation(isLandscape
                     ? ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                     : ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
             getWindow().getDecorView().setSystemUiVisibility(
