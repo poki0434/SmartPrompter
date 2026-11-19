@@ -1305,7 +1305,7 @@ public class MainActivity extends AppCompatActivity {
                 looperMsgCountInSec++;
                 String s = x.replace(">>>>> Dispatching to ", "");
                 // 归一化去掉动态哈希 @abcd1234 与 {1234abcd}，按类+what合并统计Top3
-                s = s.replaceAll("@[0-9a-fA-F]+", "").replaceAll("\{[0-9a-fA-F]+\}", "");
+                s = s.replaceAll("@[0-9a-fA-F]+", "").replaceAll("\\{[0-9a-fA-F]+\\}", "");
                 if (s.length() > 85) s = s.substring(0, 85);
                 Integer prev = looperHistogram.get(s);
                 looperHistogram.put(s, prev == null ? 1 : prev + 1);
