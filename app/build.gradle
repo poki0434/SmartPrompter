@@ -22,8 +22,8 @@ android {
         applicationId "com.smartprompter.app"
         minSdk 21
         targetSdk 34
-        versionCode 67
-        versionName "1.67.0"
+        versionCode 69
+        versionName "1.69.0"
         ndk {
             abiFilters 'arm64-v8a', 'armeabi-v7a'
         }

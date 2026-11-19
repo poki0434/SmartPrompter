@@ -630,30 +630,25 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception ignored) {}
         final String versionStr = ver;
         String[] items = {
-                "关于智能提词器 (v" + versionStr + ")",
+                "📋 一键复制最近 3 次运行日志",
                 "查看最近 3 次提词运行日志",
                 "导出最近 3 次运行日志 (.txt)",
+                "关于智能提词器 (v" + versionStr + ")",
                 "清空本地运行日志"
         };
         new AlertDialog.Builder(this)
                 .setTitle("设置")
                 .setItems(items, (d, which) -> {
                     if (which == 0) {
-                        new AlertDialog.Builder(this)
-                                .setTitle("关于智能提词器")
-                                .setMessage("版本：v" + versionStr + "\n"
-                                        + "设备：" + Build.MANUFACTURER + " " + Build.MODEL + " (Android " + Build.VERSION.RELEASE + ")\n\n"
-                                        + "核心功能：\n"
-                                        + "• 原生 Canvas 视口直绘引擎（60Hz 锁帧防卡顿）\n"
-                                        + "• 离线 AI 严格跟读（支持手机麦 / 蓝牙麦切换）\n"
-                                        + "• **重点词**加粗高亮 & # 章节标题进度跳转\n"
-                                        + "• 蓝牙耳机免触控遥控 & 半透明悬浮窗\n"
-                                        + "• 草稿置顶、搜索与 Word/MD/TXT 导入导出")
-                                .setPositiveButton("确定", null)
-                                .show();
+                        String logs = PrompterLogger.getRecentLogsCombined(this);
+                        android.content.ClipboardManager cm = (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                        if (cm != null) {
+                            cm.setPrimaryClip(android.content.ClipData.newPlainText("prompter_logs", logs));
+                            Toast.makeText(this, "已一键复制最近 3 次运行日志", Toast.LENGTH_SHORT).show();
+                        }
                     } else if (which == 1) {
                         String logs = PrompterLogger.getRecentLogsCombined(this);
-                        String preview = logs.length() > 3000 ? logs.substring(0, 3000) + "\n...(完整内容请点击导出)" : logs;
+                        String preview = logs.length() > 3000 ? logs.substring(0, 3000) + "\n...(完整内容请用一键复制)" : logs;
                         new AlertDialog.Builder(this)
                                 .setTitle("最近 3 次提词运行日志")
                                 .setMessage(preview)
@@ -670,6 +665,19 @@ public class MainActivity extends AppCompatActivity {
                         String dateTag = new SimpleDateFormat("yyyyMMdd_HHmm", Locale.getDefault()).format(new Date());
                         exportLogLauncher.launch("SmartPrompter_Logs_" + dateTag + ".txt");
                     } else if (which == 3) {
+                        new AlertDialog.Builder(this)
+                                .setTitle("关于智能提词器")
+                                .setMessage("版本：v" + versionStr + "\n"
+                                        + "设备：" + Build.MANUFACTURER + " " + Build.MODEL + " (Android " + Build.VERSION.RELEASE + ")\n\n"
+                                        + "核心功能：\n"
+                                        + "• 原生 Canvas 视口直绘引擎（60Hz 锁帧防卡顿）\n"
+                                        + "• 离线 AI 严格跟读（支持手机麦 / 蓝牙麦切换）\n"
+                                        + "• **重点词**加粗高亮 & # 章节标题进度跳转\n"
+                                        + "• 蓝牙耳机免触控遥控 & 半透明悬浮窗\n"
+                                        + "• 草稿置顶、搜索与 Word/MD/TXT 导入导出")
+                                .setPositiveButton("确定", null)
+                                .show();
+                    } else if (which == 4) {
                         PrompterLogger.clearAllLogs(this);
                         Toast.makeText(this, "已清空本地运行日志", Toast.LENGTH_SHORT).show();
                     }
@@ -1295,10 +1303,10 @@ public class MainActivity extends AppCompatActivity {
         Looper.getMainLooper().setMessageLogging(x -> {
             if (x != null && x.startsWith(">>>>>")) {
                 looperMsgCountInSec++;
-                int idx = x.indexOf("} ");
-                if (idx > 0 && idx + 2 < x.length()) {
-                    String tail = x.substring(idx + 2);
-                    if (tail.length() > 60) tail = tail.substring(0, 60);
+                if (!x.contains("MainActivity$12")) {
+                    int idx = x.indexOf("} ");
+                    String tail = (idx > 0 && idx + 2 < x.length()) ? x.substring(idx + 2) : x;
+                    if (tail.length() > 80) tail = tail.substring(0, 80);
                     lastLooperTarget = tail;
                 }
             }
