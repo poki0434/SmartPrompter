@@ -885,19 +885,18 @@ public class MainActivity extends AppCompatActivity {
     private void requestExclusiveAudioFocus() {
         if (audioManager == null) return;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                    .setAudioAttributes(new AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_MEDIA)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                            .build())
-                    .setAcceptsDelayedFocusGain(true)
-                    .setOnAudioFocusChangeListener(focusChange -> {
-                        if ((focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT || focusChange == AudioManager.AUDIOFOCUS_LOSS)
-                                && isPrompterActive) {
-                            requestExclusiveAudioFocus();
-                        }
-                    })
-                    .build();
+            if (audioFocusRequest == null) {
+                audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                        .setAudioAttributes(new AudioAttributes.Builder()
+                                .setUsage(AudioAttributes.USAGE_MEDIA)
+                                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                                .build())
+                        .setAcceptsDelayedFocusGain(true)
+                        .setOnAudioFocusChangeListener(focusChange -> {
+                            // 绝不在回调里递归重抢焦点，彻底杜绝 AudioService 乒乓死循环
+                        })
+                        .build();
+            }
             audioManager.requestAudioFocus(audioFocusRequest);
         } else {
             audioManager.requestAudioFocus(null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
@@ -1303,10 +1302,9 @@ public class MainActivity extends AppCompatActivity {
         Looper.getMainLooper().setMessageLogging(x -> {
             if (x != null && x.startsWith(">>>>>")) {
                 looperMsgCountInSec++;
-                String s = x.replace(">>>>> Dispatching to ", "");
-                // 归一化去掉动态哈希 @abcd1234 与 {1234abcd}，按类+what合并统计Top3
-                s = s.replaceAll("@[0-9a-fA-F]+", "").replaceAll("\\{[0-9a-fA-F]+\\}", "");
-                if (s.length() > 85) s = s.substring(0, 85);
+                int pStart = x.indexOf('(');
+                int pEnd = x.indexOf(')', pStart + 1);
+                String s = (pStart > 0 && pEnd > pStart) ? x.substring(pStart + 1, pEnd) : "Msg";
                 Integer prev = looperHistogram.get(s);
                 looperHistogram.put(s, prev == null ? 1 : prev + 1);
             }

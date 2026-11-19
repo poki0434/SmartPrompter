@@ -17,62 +17,59 @@
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:gravity="center_vertical"
-            android:paddingBottom="12dp">
-
-            <LinearLayout
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:orientation="vertical">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="智能提词器 · 我的草稿"
-                    android:textColor="#FFFFFF"
-                    android:textSize="20sp"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/tvDraftCount"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="共 1 篇提词文稿"
-                    android:textColor="#E2E8F0"
-                    android:textSize="12sp"
-                    android:layout_marginTop="2dp" />
-            </LinearLayout>
-
-            <Button
-                android:id="@+id/btnOpenSettings"
-                android:layout_width="wrap_content"
-                android:layout_height="38dp"
-                android:layout_marginEnd="6dp"
-                android:backgroundTint="#334155"
-                android:minWidth="0dp"
-                android:paddingStart="10dp"
-                android:paddingEnd="10dp"
-                android:text="设置"
-                android:textColor="#CBD5E1"
-                android:textSize="13sp" />
-
-            <Button
-                android:id="@+id/btnImportDraft"
-                android:layout_width="wrap_content"
-                android:layout_height="40dp"
-                android:layout_marginEnd="6dp"
-                android:text="导入"
-                android:textColor="#FFFFFF"
-                android:backgroundTint="#334155" />
+            android:paddingBottom="8dp">
 
             <Button
                 android:id="@+id/btnNewDraft"
                 android:layout_width="wrap_content"
                 android:layout_height="40dp"
-                android:text="+ 新建草稿"
+                android:layout_marginEnd="8dp"
+                android:minWidth="0dp"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:text="+ 新建"
                 android:textColor="#FFFFFF"
+                android:textSize="13sp"
                 android:backgroundTint="#4F46E5" />
+
+            <Button
+                android:id="@+id/btnImportDraft"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:minWidth="0dp"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:text="导入草稿"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp"
+                android:backgroundTint="#334155" />
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+
+            <Button
+                android:id="@+id/btnOpenSettings"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:backgroundTint="#334155"
+                android:minWidth="0dp"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:text="设置"
+                android:textColor="#CBD5E1"
+                android:textSize="13sp" />
         </LinearLayout>
+
+        <TextView
+            android:id="@+id/tvDraftCount"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="共 1 篇提词文稿"
+            android:textColor="#94A3B8"
+            android:textSize="12sp"
+            android:paddingBottom="8dp" />
 
         <EditText
             android:id="@+id/etSearchDrafts"
