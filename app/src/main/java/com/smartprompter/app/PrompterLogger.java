@@ -58,6 +58,14 @@ public class PrompterLogger {
                 .append(" | Mirror=").append(mirror)
                 .append(" | AI=").append(aiFollow)
                 .append(" | BtMic=").append(btMic).append("\n");
+        try {
+            java.util.Map<Thread, StackTraceElement[]> all = Thread.getAllStackTraces();
+            StringBuilder ts = new StringBuilder("ActiveThreads(" + all.size() + "): ");
+            for (Thread t : all.keySet()) {
+                ts.append(t.getName()).append(", ");
+            }
+            buffer.append(ts).append("\n");
+        } catch (Exception ignored) {}
         flush(ctx);
     }
 
@@ -67,7 +75,7 @@ public class PrompterLogger {
         flush(ctx);
     }
 
-    public static synchronized void logHeartbeat(Context ctx, int fps, long maxFrameMs, boolean playing, int progressPct) {
+    public static synchronized void logHeartbeat(Context ctx, int fps, long maxFrameMs, boolean playing, int progressPct, int looperMsgs, String topMsg) {
         if (currentLogFile == null) return;
         Runtime rt = Runtime.getRuntime();
         long usedMb = (rt.totalMemory() - rt.freeMemory()) / (1024 * 1024);
@@ -106,7 +114,9 @@ public class PrompterLogger {
                 .append(" | Graphics=").append(graphicsMb).append("M")
                 .append(" | PSS=").append(totalPssMb).append("M")
                 .append(" | SysAvail=").append(sysAvailMb).append("M")
-                .append(" | Threads=").append(threads).append("\n");
+                .append(" | Threads=").append(threads)
+                .append(" | LooperMsgs=").append(looperMsgs)
+                .append(" | TopMsg=").append(topMsg).append("\n");
         flush(ctx);
     }
 

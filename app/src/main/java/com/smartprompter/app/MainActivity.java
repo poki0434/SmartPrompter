@@ -146,6 +146,8 @@ public class MainActivity extends AppCompatActivity {
     private int lastProgressPct = -1;
     private int frameCounter = 0;
     private long maxFrameMsInSec = 0L;
+    private int looperMsgCountInSec = 0;
+    private String lastLooperTarget = "none";
     private TextView tvPrompterHud;
     private HorizontalScrollView layoutFloatingBar;
     private LinearLayout layoutFloatingBarInner;
@@ -283,6 +285,7 @@ public class MainActivity extends AppCompatActivity {
         renderDraftList();
         showLastCrashIfAny();
         clearPrompterSessionState();
+        Looper.getMainLooper().setMessageLogging(null);
         PrompterLogger.endSession(this, "用户退出提词");
         restorePrompterSessionFromBundle(savedInstanceState);
     }
@@ -1288,6 +1291,18 @@ public class MainActivity extends AppCompatActivity {
         PrompterLogger.startNewSession(this, verName, currentPrompterScript.length(),
                 currentSpeed, currentFontSize, currentLineSpacing, isMirror, isVoiceFollow, useBluetoothMic);
         prompterCanvasView.setScript(currentPrompterScript);
+        looperMsgCountInSec = 0;
+        Looper.getMainLooper().setMessageLogging(x -> {
+            if (x != null && x.startsWith(">>>>>")) {
+                looperMsgCountInSec++;
+                int idx = x.indexOf("} ");
+                if (idx > 0 && idx + 2 < x.length()) {
+                    String tail = x.substring(idx + 2);
+                    if (tail.length() > 60) tail = tail.substring(0, 60);
+                    lastLooperTarget = tail;
+                }
+            }
+        });
         hudHandler.removeCallbacks(memoryWatchdogRunnable);
         frameCounter = 0;
         maxFrameMsInSec = 0L;
@@ -1749,7 +1764,10 @@ public class MainActivity extends AppCompatActivity {
                 long maxF = maxFrameMsInSec;
                 frameCounter = 0;
                 maxFrameMsInSec = 0L;
-                PrompterLogger.logHeartbeat(MainActivity.this, fps, maxF, isPlaying, Math.max(0, lastProgressPct));
+                int lMsgs = looperMsgCountInSec;
+                String tMsg = lastLooperTarget;
+                looperMsgCountInSec = 0;
+                PrompterLogger.logHeartbeat(MainActivity.this, fps, maxF, isPlaying, Math.max(0, lastProgressPct), lMsgs, tMsg);
                 if (max > 0 && (used * 100L / max) >= 70L) {
                     if (!isVoiceFollow) {
                         VoiceFollower.Companion.releaseSharedModelIfIdle();
