@@ -405,7 +405,8 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_gravity="top"
-            android:background="#80000000"
+            android:alpha="0.35"
+            android:background="#4D000000"
             android:orientation="horizontal"
             android:gravity="center_vertical"
             android:paddingStart="12dp"
@@ -419,7 +420,10 @@
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:max="1000"
-                android:progress="0" />
+                android:progress="0"
+                android:progressTint="#64748B"
+                android:progressBackgroundTint="#334155"
+                android:thumbTint="#94A3B8" />
 
             <TextView
                 android:id="@+id/tvProgressPercent"
@@ -427,9 +431,8 @@
                 android:layout_height="wrap_content"
                 android:gravity="end"
                 android:text="0%"
-                android:textColor="#38BDF8"
-                android:textSize="11sp"
-                android:textStyle="bold" />
+                android:textColor="#94A3B8"
+                android:textSize="11sp" />
         </LinearLayout>
 
         <TextView

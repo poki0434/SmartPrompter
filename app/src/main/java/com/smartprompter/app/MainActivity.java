@@ -139,6 +139,7 @@ public class MainActivity extends AppCompatActivity {
     // 三级：提词控件
     private View viewFocusLine;
     private PrompterCanvasView prompterCanvasView;
+    private LinearLayout layoutTopProgress;
     private SeekBar seekPrompterProgress;
     private TextView tvProgressPercent;
     private TextView tvChapterBubble;
@@ -260,7 +261,8 @@ public class MainActivity extends AppCompatActivity {
         setupEventListeners();
         renderDraftList();
         showLastCrashIfAny();
-        restorePrompterSessionIfNeeded();
+        clearPrompterSessionState();
+        restorePrompterSessionFromBundle(savedInstanceState);
     }
 
     private void showLastCrashIfAny() {
@@ -310,6 +312,7 @@ public class MainActivity extends AppCompatActivity {
 
         viewFocusLine = findViewById(R.id.viewFocusLine);
         prompterCanvasView = findViewById(R.id.prompterCanvasView);
+        layoutTopProgress = findViewById(R.id.layoutTopProgress);
         seekPrompterProgress = findViewById(R.id.seekPrompterProgress);
         tvProgressPercent = findViewById(R.id.tvProgressPercent);
         tvChapterBubble = findViewById(R.id.tvChapterBubble);
@@ -1158,6 +1161,10 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void openPrompter() {
+        openPrompterInternal(true);
+    }
+
+    private void openPrompterInternal(boolean allowAutoStart) {
         saveCurrentDraftFromEditor();
         isPrompterActive = true;
         saveSettings();
@@ -1203,10 +1210,14 @@ public class MainActivity extends AppCompatActivity {
         syncToolbarHighlights();
         viewFocusLine.setVisibility(showFocusLine ? View.VISIBLE : View.GONE);
         wakeFloatingBar();
-        if (isVoiceFollow) {
+        if (!allowAutoStart) {
             isPlaying = false;
             btnPrompterPlayPause.setImageResource(android.R.drawable.ic_media_play);
-        syncToolbarHighlights();
+            syncToolbarHighlights();
+        } else if (isVoiceFollow) {
+            isPlaying = false;
+            btnPrompterPlayPause.setImageResource(android.R.drawable.ic_media_play);
+            syncToolbarHighlights();
             ensureMicPermissionAndInitVoice();
             showHud("🎤 正在启动 AI 严格跟读...");
         } else if (isCountdownEnabled && tvCountdownOverlay != null) {
@@ -1906,6 +1917,7 @@ public class MainActivity extends AppCompatActivity {
         layoutFloatingBar.setVisibility(View.VISIBLE);
         layoutFloatingBar.animate().cancel();
         layoutFloatingBar.setAlpha(1.0f);
+        if (layoutTopProgress != null) { layoutTopProgress.animate().cancel(); layoutTopProgress.setAlpha(0.85f); }
         hudHandler.removeCallbacks(hideFloatingBarRunnable);
         hudHandler.postDelayed(hideFloatingBarRunnable, 3000);
     }
@@ -1914,6 +1926,7 @@ public class MainActivity extends AppCompatActivity {
         if (isPrompterActive) {
             // 工具栏常驻不消失，静置时自动变为半透明
             layoutFloatingBar.animate().alpha(0.35f).setDuration(300).start();
+            if (layoutTopProgress != null) layoutTopProgress.animate().alpha(0.28f).setDuration(300).start();
         }
     };
 
@@ -1934,16 +1947,30 @@ public class MainActivity extends AppCompatActivity {
                 .apply();
     }
 
-    private void restorePrompterSessionIfNeeded() {
-        SharedPreferences sp = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
-        if (!sp.getBoolean("prompter_session_active", false)) return;
-        int dIdx = sp.getInt("prompter_session_draft_idx", 0);
-        float savedScrollY = sp.getFloat("prompter_session_scroll_y", 0f);
-        int savedHighlight = sp.getInt("prompter_session_highlight_idx", 0);
-        boolean savedLand = sp.getBoolean("prompter_session_landscape", true);
+    @Override
+    protected void onSaveInstanceState(@NonNull Bundle outState) {
+        super.onSaveInstanceState(outState);
+        if (isPrompterActive) {
+            outState.putBoolean("prompter_session_active", true);
+            outState.putInt("prompter_session_draft_idx", currentDraftIndex);
+            outState.putFloat("prompter_session_scroll_y", prompterCanvasView != null ? prompterCanvasView.getScrollYPos() : 0f);
+            outState.putInt("prompter_session_highlight_idx", highlightedIndex);
+            outState.putBoolean("prompter_session_landscape", isLandscape);
+        }
+    }
+
+    private void restorePrompterSessionFromBundle(Bundle savedInstanceState) {
+        if (savedInstanceState == null || !savedInstanceState.getBoolean("prompter_session_active", false)) return;
+        int dIdx = savedInstanceState.getInt("prompter_session_draft_idx", 0);
+        float savedScrollY = savedInstanceState.getFloat("prompter_session_scroll_y", 0f);
+        int savedHighlight = savedInstanceState.getInt("prompter_session_highlight_idx", 0);
+        boolean savedLand = savedInstanceState.getBoolean("prompter_session_landscape", true);
         if (dIdx >= 0 && dIdx < drafts.size()) {
             openDraftInEditor(dIdx);
-            openPrompter();
+            openPrompterInternal(false);
+            isPlaying = false;
+            btnPrompterPlayPause.setImageResource(android.R.drawable.ic_media_play);
+            syncToolbarHighlights();
             if (!savedLand) {
                 isLandscape = false;
                 setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
@@ -1952,8 +1979,6 @@ public class MainActivity extends AppCompatActivity {
                 highlightedIndex = savedHighlight;
                 prompterCanvasView.restoreState(savedScrollY, savedHighlight);
             });
-        } else {
-            clearPrompterSessionState();
         }
     }
 
@@ -1961,7 +1986,7 @@ public class MainActivity extends AppCompatActivity {
     protected void onPause() {
         super.onPause();
         if (isPrompterActive) {
-            savePrompterSessionState();
+            pausePrompter("切入后台");
         }
     }
 
