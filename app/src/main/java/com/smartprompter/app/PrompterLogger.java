@@ -116,7 +116,20 @@ public class PrompterLogger {
                 .append(" | SysAvail=").append(sysAvailMb).append("M")
                 .append(" | Threads=").append(threads)
                 .append(" | LooperMsgs=").append(looperMsgs)
-                .append(" | TopMsg=").append(topMsg).append("\n");
+                .append(" | TopMsgs=").append(topMsg);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                String gcCnt = Debug.getRuntimeStat("art.gc.gc-count");
+                String allocB = Debug.getRuntimeStat("art.gc.bytes-allocated");
+                long allocMb = (allocB != null && !allocB.isEmpty()) ? Long.parseLong(allocB) / (1024 * 1024) : 0;
+                String mJava = procMemInfo.getMemoryStat("summary.java-heap");
+                String mNative = procMemInfo.getMemoryStat("summary.native-heap");
+                String mOther = procMemInfo.getMemoryStat("summary.private-other");
+                buffer.append(" | GC=").append(gcCnt).append(" Alloc=").append(allocMb).append("M")
+                      .append(" (J:").append(mJava).append("K N:").append(mNative).append("K O:").append(mOther).append("K)");
+            }
+        } catch (Exception ignored) {}
+        buffer.append("\n");
         flush(ctx);
     }
 

@@ -147,7 +147,7 @@ public class MainActivity extends AppCompatActivity {
     private int frameCounter = 0;
     private long maxFrameMsInSec = 0L;
     private int looperMsgCountInSec = 0;
-    private String lastLooperTarget = "none";
+    private final java.util.HashMap<String, Integer> looperHistogram = new java.util.HashMap<>();
     private TextView tvPrompterHud;
     private HorizontalScrollView layoutFloatingBar;
     private LinearLayout layoutFloatingBarInner;
@@ -1303,12 +1303,12 @@ public class MainActivity extends AppCompatActivity {
         Looper.getMainLooper().setMessageLogging(x -> {
             if (x != null && x.startsWith(">>>>>")) {
                 looperMsgCountInSec++;
-                if (!x.contains("MainActivity$12")) {
-                    int idx = x.indexOf("} ");
-                    String tail = (idx > 0 && idx + 2 < x.length()) ? x.substring(idx + 2) : x;
-                    if (tail.length() > 80) tail = tail.substring(0, 80);
-                    lastLooperTarget = tail;
-                }
+                String s = x.replace(">>>>> Dispatching to ", "");
+                // 归一化去掉动态哈希 @abcd1234 与 {1234abcd}，按类+what合并统计Top3
+                s = s.replaceAll("@[0-9a-fA-F]+", "").replaceAll("\{[0-9a-fA-F]+\}", "");
+                if (s.length() > 85) s = s.substring(0, 85);
+                Integer prev = looperHistogram.get(s);
+                looperHistogram.put(s, prev == null ? 1 : prev + 1);
             }
         });
         hudHandler.removeCallbacks(memoryWatchdogRunnable);
@@ -1773,9 +1773,17 @@ public class MainActivity extends AppCompatActivity {
                 frameCounter = 0;
                 maxFrameMsInSec = 0L;
                 int lMsgs = looperMsgCountInSec;
-                String tMsg = lastLooperTarget;
                 looperMsgCountInSec = 0;
-                PrompterLogger.logHeartbeat(MainActivity.this, fps, maxF, isPlaying, Math.max(0, lastProgressPct), lMsgs, tMsg);
+                java.util.List<java.util.Map.Entry<String, Integer>> entries = new java.util.ArrayList<>(looperHistogram.entrySet());
+                looperHistogram.clear();
+                entries.sort((a, b) -> Integer.compare(b.getValue(), a.getValue()));
+                StringBuilder topSb = new StringBuilder("[");
+                for (int k = 0; k < Math.min(3, entries.size()); k++) {
+                    if (k > 0) topSb.append("; ");
+                    topSb.append(entries.get(k).getKey()).append(" x").append(entries.get(k).getValue());
+                }
+                topSb.append("]");
+                PrompterLogger.logHeartbeat(MainActivity.this, fps, maxF, isPlaying, Math.max(0, lastProgressPct), lMsgs, topSb.toString());
                 if (max > 0 && (used * 100L / max) >= 70L) {
                     if (!isVoiceFollow) {
                         VoiceFollower.Companion.releaseSharedModelIfIdle();
