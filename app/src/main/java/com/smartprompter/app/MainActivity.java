@@ -52,7 +52,6 @@ import androidx.appcompat.app.AlertDialog;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.recyclerview.widget.LinearLayoutManager;
-import androidx.recyclerview.widget.RecyclerView;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import java.text.SimpleDateFormat;
@@ -144,6 +143,7 @@ public class MainActivity extends AppCompatActivity {
     private TextView tvProgressPercent;
     private TextView tvChapterBubble;
     private boolean isUserSeekingProgress = false;
+    private int lastProgressPct = -1;
     private TextView tvPrompterHud;
     private HorizontalScrollView layoutFloatingBar;
     private LinearLayout layoutFloatingBarInner;
@@ -350,8 +350,10 @@ public class MainActivity extends AppCompatActivity {
                 if (!isUserSeekingProgress && seekPrompterProgress != null) {
                     seekPrompterProgress.setProgress(Math.round(progress01 * 1000f));
                 }
-                if (tvProgressPercent != null) {
-                    tvProgressPercent.setText(Math.round(progress01 * 100f) + "%");
+                int pct = Math.round(progress01 * 100f);
+                if (tvProgressPercent != null && pct != lastProgressPct) {
+                    lastProgressPct = pct;
+                    tvProgressPercent.setText(pct + "%");
                 }
             }
         });
@@ -1011,6 +1013,7 @@ public class MainActivity extends AppCompatActivity {
             wakeFloatingBar();
         hudHandler.removeCallbacks(countdownTickRunnable);
         if (tvCountdownOverlay != null) tvCountdownOverlay.setVisibility(View.GONE);
+        if (tvChapterBubble != null) tvChapterBubble.setVisibility(View.GONE);
         hudHandler.removeCallbacks(autoSaveRunnable);
         hudHandler.removeCallbacks(memoryWatchdogRunnable);
         hudHandler.postDelayed(memoryWatchdogRunnable, 15000);
@@ -1542,240 +1545,6 @@ public class MainActivity extends AppCompatActivity {
             case '9': return '九';
             default: return c;
         }
-    }
-
-    private static class ScriptChunk {
-        final int start;
-        final int end;
-        final String text;
-        ScriptChunk(int start, int end, String text) {
-            this.start = start;
-            this.end = end;
-            this.text = text;
-        }
-    }
-
-    private final List<ScriptChunk> scriptChunks = new ArrayList<>();
-    private int activeChunkPos = 0;
-
-
-    private static void applyStaticBoldEmphasisSpans(SpannableString ss, String text, boolean isFullyRead) {
-        int idx = 0;
-        while (idx < text.length()) {
-            int open = text.indexOf("**", idx);
-            if (open < 0) break;
-            int close = text.indexOf("**", open + 2);
-            if (close < 0) break;
-            if (close > open + 2) {
-                ss.setSpan(new android.text.style.ScaleXSpan(0f),
-                        open, open + 2, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-                ss.setSpan(new ForegroundColorSpan(Color.TRANSPARENT),
-                        open, open + 2, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-                ss.setSpan(new StyleSpan(android.graphics.Typeface.BOLD),
-                        open + 2, close, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-                if (!isFullyRead) {
-                    ss.setSpan(new ForegroundColorSpan(Color.parseColor("#22D3EE")),
-                            open + 2, close, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-                }
-                ss.setSpan(new android.text.style.ScaleXSpan(0f),
-                        close, close + 2, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-                ss.setSpan(new ForegroundColorSpan(Color.TRANSPARENT),
-                        close, close + 2, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-            }
-            idx = close + 2;
-        }
-    }
-
-    private void buildChunks(String fullText) {
-        scriptChunks.clear();
-        activeChunkPos = 0;
-        if (fullText == null || fullText.isEmpty()) return;
-        int len = fullText.length();
-        int i = 0;
-        while (i < len) {
-            int nl = fullText.indexOf('\n', i);
-            int segEnd = (nl == -1) ? len : nl + 1;
-            int pos = i;
-            while (pos < segEnd) {
-                int chunkEnd = Math.min(pos + 32, segEnd);
-                if (chunkEnd < segEnd) {
-                    // 避免把 **重点词** 截断在两块之间
-                    int lastOpen = fullText.lastIndexOf("**", chunkEnd - 1);
-                    if (lastOpen >= pos) {
-                        int countStars = 0;
-                        int scan = pos;
-                        while (true) {
-                            int found = fullText.indexOf("**", scan);
-                            if (found < 0 || found >= chunkEnd) break;
-                            countStars++;
-                            scan = found + 2;
-                        }
-                        if (countStars % 2 == 1) {
-                            int close = fullText.indexOf("**", chunkEnd);
-                            if (close >= 0 && close + 2 <= segEnd && close + 2 - pos <= 72) {
-                                chunkEnd = close + 2;
-                            }
-                        }
-                    }
-                }
-                String chunkStr = fullText.substring(pos, chunkEnd);
-                String displayStr = chunkStr.endsWith("\n") ? chunkStr.substring(0, chunkStr.length() - 1) : chunkStr;
-                scriptChunks.add(new ScriptChunk(pos, chunkEnd, displayStr));
-                pos = chunkEnd;
-            }
-            i = segEnd;
-        }
-    }
-
-    private class ChunkAdapter extends RecyclerView.Adapter<ChunkAdapter.VH> {
-        class VH extends RecyclerView.ViewHolder {
-            final TextView tv;
-            int boundFontSize = -1;
-            float boundLineSpacing = -1f;
-            int boundGravity = -1;
-            int boundColor = 0;
-            int chunkStartOffset = 0;
-            VH(TextView tv) { super(tv); this.tv = tv; }
-        }
-
-        @NonNull
-        @Override
-        public VH onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
-            TextView tv = new TextView(parent.getContext());
-            tv.setLayoutParams(new RecyclerView.LayoutParams(
-                    RecyclerView.LayoutParams.MATCH_PARENT,
-                    RecyclerView.LayoutParams.WRAP_CONTENT));
-            tv.setTypeface(null, android.graphics.Typeface.NORMAL);
-            final VH holder = new VH(tv);
-            tv.setOnClickListener(v -> {
-                if (isPrompterActive) {
-                    if (layoutLineSpacingPanel != null && layoutLineSpacingPanel.getVisibility() == View.VISIBLE) {
-                        layoutLineSpacingPanel.setVisibility(View.GONE);
-                        syncToolbarHighlights();
-                    }
-                    togglePrompterPlayPause("点击屏幕");
-                    wakeFloatingBar();
-                }
-            });
-            tv.setOnLongClickListener(v -> {
-                if (isPrompterActive) {
-                    jumpAndStartVoiceFollow(holder.chunkStartOffset);
-                    return true;
-                }
-                return false;
-            });
-            return holder;
-        }
-
-        @Override
-        public void onBindViewHolder(@NonNull VH holder, int position) {
-            ScriptChunk c = scriptChunks.get(position);
-            holder.chunkStartOffset = c.start;
-            if (holder.boundFontSize != currentFontSize) {
-                holder.boundFontSize = currentFontSize;
-                holder.tv.setTextSize(currentFontSize);
-            }
-            if (holder.boundLineSpacing != currentLineSpacing) {
-                holder.boundLineSpacing = currentLineSpacing;
-                holder.tv.setLineSpacing(0f, currentLineSpacing);
-            }
-            int targetGravity = isAlignLeft ? Gravity.START : Gravity.CENTER_HORIZONTAL;
-            if (holder.boundGravity != targetGravity) {
-                holder.boundGravity = targetGravity;
-                holder.tv.setGravity(targetGravity);
-            }
-            if (highlightedIndex >= c.end) {
-                int cRead = Color.parseColor("#FACC15");
-                if (holder.boundColor != cRead) {
-                    holder.boundColor = cRead;
-                    holder.tv.setTextColor(cRead);
-                }
-                if (c.text.contains("**")) {
-                    SpannableString ss = new SpannableString(c.text);
-                    applyStaticBoldEmphasisSpans(ss, c.text, true);
-                    holder.tv.setText(ss);
-                } else {
-                    holder.tv.setText(c.text);
-                }
-            } else if (highlightedIndex <= c.start) {
-                if (holder.boundColor != Color.WHITE) {
-                    holder.boundColor = Color.WHITE;
-                    holder.tv.setTextColor(Color.WHITE);
-                }
-                if (c.text.contains("**")) {
-                    SpannableString ss = new SpannableString(c.text);
-                    applyStaticBoldEmphasisSpans(ss, c.text, false);
-                    holder.tv.setText(ss);
-                } else {
-                    holder.tv.setText(c.text);
-                }
-            } else {
-                if (holder.boundColor != Color.WHITE) {
-                    holder.boundColor = Color.WHITE;
-                    holder.tv.setTextColor(Color.WHITE);
-                }
-                SpannableString ss = new SpannableString(c.text);
-                if (c.text.contains("**")) {
-                    applyStaticBoldEmphasisSpans(ss, c.text, false);
-                }
-                int localEnd = Math.min(highlightedIndex - c.start, c.text.length());
-                ss.setSpan(ktvHighlightSpan, 0, localEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-                holder.tv.setText(ss);
-            }
-        }
-
-        @Override
-        public void onViewRecycled(@NonNull VH holder) {
-            super.onViewRecycled(holder);
-            holder.tv.setText(null);
-        }
-
-
-        private void applyBoldEmphasisSpans(SpannableString ss, String text, boolean isFullyRead) {
-            int idx = 0;
-            while (idx < text.length()) {
-                int open = text.indexOf("**", idx);
-                if (open < 0) break;
-                int close = text.indexOf("**", open + 2);
-                if (close < 0) break;
-                if (close > open + 2) {
-                    ss.setSpan(new android.text.style.ScaleXSpan(0f),
-                            open, open + 2, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-                    ss.setSpan(new ForegroundColorSpan(Color.TRANSPARENT),
-                            open, open + 2, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-                    ss.setSpan(new StyleSpan(android.graphics.Typeface.BOLD),
-                            open + 2, close, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-                    if (!isFullyRead) {
-                        ss.setSpan(new ForegroundColorSpan(Color.parseColor("#22D3EE")),
-                                open + 2, close, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-                    }
-                    ss.setSpan(new android.text.style.ScaleXSpan(0f),
-                            close, close + 2, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-                    ss.setSpan(new ForegroundColorSpan(Color.TRANSPARENT),
-                            close, close + 2, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-                }
-                idx = close + 2;
-            }
-        }
-
-        @Override
-        public int getItemCount() {
-            return scriptChunks.size();
-        }
-    }
-
-    private int findChunkForOffset(int offset) {
-        if (scriptChunks.isEmpty()) return 0;
-        int lo = 0, hi = scriptChunks.size() - 1;
-        while (lo < hi) {
-            int mid = (lo + hi) >>> 1;
-            if (offset < scriptChunks.get(mid).end) {
-                hi = mid;
-            } else {
-                lo = mid + 1;
-            }
-        }
-        return lo;
     }
 
     private void renderKtvText() {

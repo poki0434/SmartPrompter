@@ -87,6 +87,8 @@ public class PrompterCanvasView extends View {
     private float animatedHighlightIndex = 0f;
 
     private float scrollY = 0f;
+    private float scrollSubPixelRemainder = 0f;
+    private int lastNotifiedPermille = -1;
     private float maxScrollY = 0f;
     private float lineHeightPx = 80f;
     private float topPadPx = 0f;
@@ -171,6 +173,8 @@ public class PrompterCanvasView extends View {
         this.targetHighlightedIndex = 0;
         this.animatedHighlightIndex = 0f;
         this.scrollY = 0f;
+        this.scrollSubPixelRemainder = 0f;
+        this.lastNotifiedPermille = -1;
         if (!scroller.isFinished()) scroller.abortAnimation();
         relayoutLines();
         notifyProgress();
@@ -288,24 +292,39 @@ public class PrompterCanvasView extends View {
         this.targetHighlightedIndex = 0;
         this.animatedHighlightIndex = 0f;
         this.scrollY = 0f;
+        this.scrollSubPixelRemainder = 0f;
+        this.lastNotifiedPermille = -1;
         if (!scroller.isFinished()) scroller.abortAnimation();
         notifyProgress();
         invalidate();
     }
 
     public boolean scrollByDelta(float dy) {
-        if (maxScrollY <= 0f) return false;
-        float next = scrollY + dy;
-        if (next >= maxScrollY) {
-            scrollY = maxScrollY;
-            notifyProgress();
-            invalidate();
+        if (maxScrollY <= 0f) {
             if (dy > 0 && interactionListener != null) {
                 interactionListener.onReachBottom();
             }
             return false;
         }
-        scrollY = Math.max(0f, next);
+        scrollSubPixelRemainder += dy;
+        int intDy = (int) scrollSubPixelRemainder;
+        if (intDy == 0) {
+            return true;
+        }
+        scrollSubPixelRemainder -= intDy;
+
+        float next = scrollY + intDy;
+        if (next >= maxScrollY) {
+            scrollY = Math.round(maxScrollY);
+            scrollSubPixelRemainder = 0f;
+            notifyProgress();
+            invalidate();
+            if (intDy > 0 && interactionListener != null) {
+                interactionListener.onReachBottom();
+            }
+            return false;
+        }
+        scrollY = Math.max(0f, Math.round(next));
         notifyProgress();
         invalidate();
         return true;
@@ -328,6 +347,9 @@ public class PrompterCanvasView extends View {
         if (interactionListener == null) return;
         float p = (maxScrollY > 0f) ? (scrollY / maxScrollY) : 0f;
         p = Math.max(0f, Math.min(1f, p));
+        int permille = Math.round(p * 1000f);
+        if (permille == lastNotifiedPermille) return;
+        lastNotifiedPermille = permille;
         interactionListener.onScrollProgress(p, getChapterTitleAtProgress(p));
     }
 
