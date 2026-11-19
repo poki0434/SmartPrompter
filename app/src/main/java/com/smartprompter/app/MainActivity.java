@@ -144,6 +144,8 @@ public class MainActivity extends AppCompatActivity {
     private TextView tvChapterBubble;
     private boolean isUserSeekingProgress = false;
     private int lastProgressPct = -1;
+    private int frameCounter = 0;
+    private long maxFrameMsInSec = 0L;
     private TextView tvPrompterHud;
     private HorizontalScrollView layoutFloatingBar;
     private LinearLayout layoutFloatingBarInner;
@@ -1092,8 +1094,6 @@ public class MainActivity extends AppCompatActivity {
         if (tvCountdownOverlay != null) tvCountdownOverlay.setVisibility(View.GONE);
         if (tvChapterBubble != null) tvChapterBubble.setVisibility(View.GONE);
         hudHandler.removeCallbacks(autoSaveRunnable);
-        hudHandler.removeCallbacks(memoryWatchdogRunnable);
-        hudHandler.postDelayed(memoryWatchdogRunnable, 15000);
         });
 
         btnPrompterAlign.setOnClickListener(v -> {
@@ -1288,6 +1288,10 @@ public class MainActivity extends AppCompatActivity {
         PrompterLogger.startNewSession(this, verName, currentPrompterScript.length(),
                 currentSpeed, currentFontSize, currentLineSpacing, isMirror, isVoiceFollow, useBluetoothMic);
         prompterCanvasView.setScript(currentPrompterScript);
+        hudHandler.removeCallbacks(memoryWatchdogRunnable);
+        frameCounter = 0;
+        maxFrameMsInSec = 0L;
+        hudHandler.postDelayed(memoryWatchdogRunnable, 1000);
 
         applyMirror();
         applyAlignment();
@@ -1708,12 +1712,16 @@ public class MainActivity extends AppCompatActivity {
             float deltaSeconds = elapsedNanos / 1_000_000_000.0f;
             lastFrameTime = frameTimeNanos;
 
+            long frameStartNs = System.nanoTime();
+            frameCounter++;
             if (deltaSeconds > 0f && deltaSeconds < 0.1f) {
                 float dy = currentSpeed * deltaSeconds;
                 if (dy > 0f && !prompterCanvasView.scrollByDelta(dy)) {
                     return;
                 }
             }
+            long costMs = (System.nanoTime() - frameStartNs) / 1_000_000L;
+            if (costMs > maxFrameMsInSec) maxFrameMsInSec = costMs;
 
             Choreographer.getInstance().postFrameCallback(this);
         }
@@ -1737,14 +1745,18 @@ public class MainActivity extends AppCompatActivity {
                 Runtime rt = Runtime.getRuntime();
                 long used = rt.totalMemory() - rt.freeMemory();
                 long max = rt.maxMemory();
-                PrompterLogger.logHeartbeat(MainActivity.this, Math.max(0, lastProgressPct));
+                int fps = frameCounter;
+                long maxF = maxFrameMsInSec;
+                frameCounter = 0;
+                maxFrameMsInSec = 0L;
+                PrompterLogger.logHeartbeat(MainActivity.this, fps, maxF, isPlaying, Math.max(0, lastProgressPct));
                 if (max > 0 && (used * 100L / max) >= 70L) {
                     if (!isVoiceFollow) {
                         VoiceFollower.Companion.releaseSharedModelIfIdle();
                     }
                 }
             } catch (Exception ignored) {}
-            hudHandler.postDelayed(this, 15000);
+            hudHandler.postDelayed(this, 1000);
         }
     };
 
@@ -1904,6 +1916,12 @@ public class MainActivity extends AppCompatActivity {
             }
             getWindow().setAttributes(lp);
         } catch (Exception ignored) {}
+    }
+
+    @Override
+    public void onLowMemory() {
+        super.onLowMemory();
+        PrompterLogger.logEvent(this, "系统严重低内存回调 onLowMemory()");
     }
 
     @Override

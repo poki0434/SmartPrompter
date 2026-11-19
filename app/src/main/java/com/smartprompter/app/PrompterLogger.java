@@ -1,5 +1,6 @@
 package com.smartprompter.app;
 
+import android.app.ActivityManager;
 import android.content.Context;
 import android.os.Build;
 import android.os.Debug;
@@ -27,6 +28,8 @@ public class PrompterLogger {
 
     private static File currentLogFile = null;
     private static final StringBuilder buffer = new StringBuilder();
+    private static final Debug.MemoryInfo procMemInfo = new Debug.MemoryInfo();
+    private static final ActivityManager.MemoryInfo sysMemInfo = new ActivityManager.MemoryInfo();
 
     private static File getLogDir(Context ctx) {
         File dir = new File(ctx.getFilesDir(), "prompter_logs");
@@ -61,20 +64,49 @@ public class PrompterLogger {
     public static synchronized void logEvent(Context ctx, String event) {
         if (currentLogFile == null) return;
         buffer.append("[").append(TIME_FMT.format(new Date())).append("] ").append(event).append("\n");
-        if (buffer.length() >= 512) {
-            flush(ctx);
-        }
+        flush(ctx);
     }
 
-    public static synchronized void logHeartbeat(Context ctx, int progressPct) {
+    public static synchronized void logHeartbeat(Context ctx, int fps, long maxFrameMs, boolean playing, int progressPct) {
         if (currentLogFile == null) return;
         Runtime rt = Runtime.getRuntime();
         long usedMb = (rt.totalMemory() - rt.freeMemory()) / (1024 * 1024);
         long maxMb = rt.maxMemory() / (1024 * 1024);
         long nativeMb = Debug.getNativeHeapAllocatedSize() / (1024 * 1024);
-        buffer.append("[").append(TIME_FMT.format(new Date())).append("] [心跳] 进度=")
-                .append(progressPct).append("% | Java堆=").append(usedMb).append("/").append(maxMb)
-                .append("MB | Native堆=").append(nativeMb).append("MB\n");
+
+        long totalPssMb = 0;
+        String graphicsMb = "0";
+        try {
+            Debug.getMemoryInfo(procMemInfo);
+            totalPssMb = procMemInfo.getTotalPss() / 1024L;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                String gKb = procMemInfo.getMemoryStat("summary.graphics");
+                if (gKb != null && !gKb.isEmpty()) {
+                    graphicsMb = String.valueOf(Long.parseLong(gKb) / 1024L);
+                }
+            }
+        } catch (Exception ignored) {}
+
+        long sysAvailMb = -1;
+        try {
+            ActivityManager am = (ActivityManager) ctx.getSystemService(Context.ACTIVITY_SERVICE);
+            if (am != null) {
+                am.getMemoryInfo(sysMemInfo);
+                sysAvailMb = sysMemInfo.availMem / (1024L * 1024L);
+            }
+        } catch (Exception ignored) {}
+
+        int threads = Thread.activeCount();
+        buffer.append("[").append(TIME_FMT.format(new Date())).append("] FPS=").append(fps)
+                .append(" | MaxFrame=").append(maxFrameMs).append("ms")
+                .append(" | 播放=").append(playing)
+                .append(" | 进度=").append(progressPct).append("%")
+                .append(" | Java=").append(usedMb).append("/").append(maxMb).append("M")
+                .append(" | Native=").append(nativeMb).append("M")
+                .append(" | Graphics=").append(graphicsMb).append("M")
+                .append(" | PSS=").append(totalPssMb).append("M")
+                .append(" | SysAvail=").append(sysAvailMb).append("M")
+                .append(" | Threads=").append(threads).append("\n");
         flush(ctx);
     }
 
