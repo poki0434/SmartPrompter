@@ -348,7 +348,7 @@ public class FloatingPrompterService extends Service {
                     break;
                 case MotionEvent.ACTION_MOVE:
                     float rawY = event.getRawY();
-                    float dy = isMirror ? (rawY - lastTouchY) : (lastTouchY - rawY);
+                    float dy = lastTouchY - rawY;
                     lastTouchY = rawY;
                     int maxS = Math.max(0, floatTextWrapper.getHeight() - floatScrollContainer.getHeight());
                     currentScrollY = Math.max(0f, Math.min(maxS, currentScrollY + dy));
@@ -398,7 +398,7 @@ public class FloatingPrompterService extends Service {
         }
         if (isMirror) {
             floatScrollContainer.setScaleX(-1.0f);
-            floatScrollContainer.setRotation(180f);
+            floatScrollContainer.setRotation(0f);
             btnFloatMirror.setColorFilter(Color.parseColor("#38BDF8"));
         } else {
             floatScrollContainer.setScaleX(1.0f);

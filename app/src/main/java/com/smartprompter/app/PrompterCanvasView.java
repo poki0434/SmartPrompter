@@ -139,14 +139,14 @@ public class PrompterCanvasView extends View {
 
             @Override
             public boolean onScroll(MotionEvent e1, MotionEvent e2, float distanceX, float distanceY) {
-                float dy = isMirror ? -distanceY : distanceY;
+                float dy = distanceY;
                 scrollByDelta(dy);
                 return true;
             }
 
             @Override
             public boolean onFling(MotionEvent e1, MotionEvent e2, float velocityX, float velocityY) {
-                float vy = isMirror ? velocityY : -velocityY;
+                float vy = -velocityY;
                 scroller.fling(0, Math.round(scrollY), 0, Math.round(vy), 0, 0, 0, Math.round(maxScrollY));
                 postInvalidateOnAnimation();
                 return true;
@@ -155,7 +155,7 @@ public class PrompterCanvasView extends View {
             @Override
             public void onLongPress(MotionEvent e) {
                 if (interactionListener != null && !lines.isEmpty()) {
-                    float touchY = isMirror ? (getHeight() - e.getY()) : e.getY();
+                    float touchY = e.getY();
                     int idx = (int) ((scrollY + touchY - topPadPx) / lineHeightPx);
                     idx = Math.max(0, Math.min(lines.size() - 1, idx));
                     interactionListener.onLongPressOffset(lines.get(idx).startOffset);
@@ -543,7 +543,7 @@ public class PrompterCanvasView extends View {
 
         if (isMirror) {
             canvas.save();
-            canvas.scale(-1f, -1f, viewW / 2f, viewH / 2f);
+            canvas.scale(-1f, 1f, viewW / 2f, viewH / 2f);
         }
 
         int firstLine = Math.max(0, (int) Math.floor((scrollY - topPadPx) / lineHeightPx) - 1);

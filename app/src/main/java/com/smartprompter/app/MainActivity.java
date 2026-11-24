@@ -23,7 +23,6 @@ import android.provider.Settings;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.support.v4.media.MediaMetadataCompat;
 import android.support.v4.media.session.MediaSessionCompat;
 import androidx.media.session.MediaButtonReceiver;
 import android.support.v4.media.session.PlaybackStateCompat;
@@ -75,7 +74,7 @@ import java.util.UUID;
  * 智能提词器主界面 (v8 - 三级架构 + OPPO TWS 深度保活)
  * 一级界面：草稿列表（文档1、文档2... 含标题与内容预览，支持新建与删除）
  * 二级界面：编辑标题、提词内容与提词参数设置
- * 三级界面：全屏提词（单击屏幕/耳机启停，上下滑屏/耳机调速 ±10 px/s，单一镜像水平+180°）
+ * 三级界面：全屏提词（单击屏幕/耳机启停，上下滑屏/耳机调速 ±10 px/s，提词器水平镜像）
  */
 public class MainActivity extends AppCompatActivity {
 
@@ -790,19 +789,11 @@ public class MainActivity extends AppCompatActivity {
 
     private void setupMediaSessionAndAudioFocus() {
         audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-        requestExclusiveAudioFocus();
 
         mediaSession = new MediaSessionCompat(this, "PrompterMediaSession");
         mediaSession.setFlags(MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS
                 | MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS);
-        mediaSession.setPlaybackToLocal(AudioManager.STREAM_MUSIC);
-        mediaSession.setMetadata(new MediaMetadataCompat.Builder()
-                .putString(MediaMetadataCompat.METADATA_KEY_TITLE, "智能提词器")
-                .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, "蓝牙遥控提词")
-                .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, 3600000L)
-                .build());
-
-        updatePlaybackState(PlaybackStateCompat.STATE_PAUSED);
+        updatePlaybackState(PlaybackStateCompat.STATE_NONE);
 
         mediaSession.setCallback(new MediaSessionCompat.Callback() {
             @Override
@@ -892,8 +883,8 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        mediaSession.setActive(true);
-        tvRemoteSignalBadge.setText("🟢 蓝牙耳机按键与音量监听已激活");
+        mediaSession.setActive(false);
+        tvRemoteSignalBadge.setText("🟢 蓝牙耳机按键与音量监听已就绪");
         tvRemoteSignalBadge.setTextColor(Color.parseColor("#34D399"));
     }
 
@@ -1241,7 +1232,7 @@ public class MainActivity extends AppCompatActivity {
         applyAlignment();
         syncToolbarHighlights();
             saveSettings();
-            showHud("🪞 镜像(水平+180°): " + (isMirror ? "开" : "关"));
+            showHud("🪞 提词器镜像: " + (isMirror ? "开" : "关"));
             wakeFloatingBar();
         hudHandler.removeCallbacks(countdownTickRunnable);
         if (tvCountdownOverlay != null) tvCountdownOverlay.setVisibility(View.GONE);
@@ -1512,6 +1503,13 @@ public class MainActivity extends AppCompatActivity {
         if (voiceFollower != null) voiceFollower.release();
         isPrompterActive = false;
         clearPrompterSessionState();
+        if (mediaSession != null) {
+            updatePlaybackState(PlaybackStateCompat.STATE_NONE);
+            mediaSession.setActive(false);
+        }
+        if (audioManager != null && audioFocusRequest != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            audioManager.abandonAudioFocusRequest(audioFocusRequest);
+        }
 
         if (audioManager != null && savedOriginalVolume != -1) {
             try {
@@ -2050,21 +2048,24 @@ public class MainActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         force60HzRefreshRate();
-        requestExclusiveAudioFocus();
         if (!isPrompterActive) {
             setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+            if (mediaSession != null) {
+                mediaSession.setActive(false);
+            }
         } else {
-                setRequestedOrientation(isLandscape
+            requestExclusiveAudioFocus();
+            setRequestedOrientation(isLandscape
                     ? ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                     : ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
             getWindow().getDecorView().setSystemUiVisibility(
                     View.SYSTEM_UI_FLAG_FULLSCREEN
                             | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                             | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
-        }
-        if (mediaSession != null) {
-            mediaSession.setActive(true);
-            updatePlaybackState(PlaybackStateCompat.STATE_PLAYING);
+            if (mediaSession != null) {
+                mediaSession.setActive(true);
+                updatePlaybackState(isPlaying ? PlaybackStateCompat.STATE_PLAYING : PlaybackStateCompat.STATE_PAUSED);
+            }
         }
     }
 
